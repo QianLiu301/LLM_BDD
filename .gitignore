@@ -1,0 +1,17 @@
+# ===== Ignore secret / env files =====
+llm_config.json
+set_env.bat
+set_env.sh
+
+# ignore all local env
+*.env
+
+# ignore PyCharm stuff
+.idea/
+
+# ignore output folder (optional)
+HdlFormalVerifier/AluBDDVerilog/src/output/
+
+# Python cache
+__pycache__/
+*.pyc
