@@ -1,353 +1,618 @@
 """
-SPEC Generator - Generate standardized ALU specification from user input
-This module uses LLM to convert user requirements into a formal specification
+ALU Generator - Generate Verilog ALU module from specification
+==============================================================
+
+This module reads spec files (JSON/TXT) and generates Verilog ALU design.
+NO LLM is used - this is a deterministic transformation.
+
+ARCHITECTURE:
+    spec.txt / spec.json  (from spec_generator.py)
+           │
+           ▼
+    ┌──────────────────┐
+    │   alu_generator  │  ◄── NO LLM (deterministic)
+    │    (this file)   │
+    └────────┬─────────┘
+             │
+             ▼
+         ALU.v (DUT)
+             │
+             ▼
+      verilog_generator.py → testbench.v
 
 PURPOSE:
-This file creates a standardized SPEC document that serves as the single source
-of truth for BOTH BDD scenario generation AND Verilog DUT generation.
-This ensures independence between test generation and design generation.
+- Read specification from specs directory
+- Generate synthesizable Verilog ALU module
+- Support all standard ALU operations
+- Generate proper flag logic (zero, carry, overflow, negative)
+
+This ensures:
+1. Deterministic output (same spec → same ALU.v)
+2. Independence from LLM (no API calls needed)
+3. Traceability (Verilog directly maps to spec)
+4. Independence from BDD generation
 """
 
 import os
+import re
+import json
 import argparse
 from pathlib import Path
-from typing import Dict, Optional
-import json
-
-# Import your existing LLM provider
-try:
-    from llm_providers import get_llm_response
-    HAS_LLM = True
-except ImportError:
-    print("Warning: llm_providers module not found.")
-    HAS_LLM = False
+from typing import List, Dict, Optional, Union
+from datetime import datetime
 
 
-class SpecGenerator:
-    """Generate standardized specification from user requirements"""
+class ALUGenerator:
+    """
+    Generate Verilog ALU module from specification.
 
-    def __init__(self, output_dir: str = "./specs"):
+    This is a deterministic generator - NO LLM is used.
+    Same input spec always produces the same Verilog output.
+    """
+
+    # Standard ALU operations with Verilog implementation
+    OPERATION_TEMPLATES = {
+        "ADD": {
+            "opcode": "0000",
+            "verilog": "{result_full} = a + b;",
+            "description": "Addition (A + B)"
+        },
+        "SUB": {
+            "opcode": "0001",
+            "verilog": "{result_full} = a - b;",
+            "description": "Subtraction (A - B)"
+        },
+        "AND": {
+            "opcode": "0010",
+            "verilog": "{result_full} = {{1'b0, a & b}};",
+            "description": "Bitwise AND (A & B)"
+        },
+        "OR": {
+            "opcode": "0011",
+            "verilog": "{result_full} = {{1'b0, a | b}};",
+            "description": "Bitwise OR (A | B)"
+        },
+        "XOR": {
+            "opcode": "0100",
+            "verilog": "{result_full} = {{1'b0, a ^ b}};",
+            "description": "Bitwise XOR (A ^ B)"
+        },
+        "NOT": {
+            "opcode": "0101",
+            "verilog": "{result_full} = {{1'b0, ~a}};",
+            "description": "Bitwise NOT (~A)"
+        },
+        "SHL": {
+            "opcode": "0110",
+            "verilog": "{result_full} = {{1'b0, a << b[3:0]}};",
+            "description": "Shift Left (A << B)"
+        },
+        "SHR": {
+            "opcode": "0111",
+            "verilog": "{result_full} = {{1'b0, a >> b[3:0]}};",
+            "description": "Shift Right (A >> B)"
+        },
+    }
+
+    def __init__(
+            self,
+            spec_dir: Optional[str] = None,
+            output_dir: Optional[str] = None,
+            project_root: Optional[str] = None,
+            debug: bool = True
+    ):
         """
-        Initialize SPEC generator
+        Initialize ALU generator.
 
         Args:
-            output_dir: Directory to save generated SPEC files
+            spec_dir: Directory containing spec files
+            output_dir: Directory to save Verilog files
+            project_root: Project root directory
+            debug: Enable debug output
         """
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.debug = debug
+        self.project_root = Path(project_root) if project_root else None
 
-    def generate_spec(self, user_input: str,
-                     llm_provider: str = "openai",
-                     model: str = "gpt-4") -> Dict[str, any]:
+        # Setup paths
+        self.spec_dir = self._find_spec_dir(spec_dir)
+        self.output_dir = self._setup_output_dir(output_dir)
+
+        print(f"📁 Spec directory: {self.spec_dir}")
+        print(f"📁 Output directory: {self.output_dir}")
+
+    def _find_spec_dir(self, spec_dir: Optional[str]) -> Path:
         """
-        Generate formal specification from user input
+        Find specs directory dynamically.
 
-        Args:
-            user_input: Natural language requirements from user
-            llm_provider: LLM provider to use
-            model: Model name
+        Priority:
+        1. Explicitly specified spec_dir
+        2. project_root/src/specs
+        3. Search common locations
+        4. Fallback to absolute path
+        """
+        # 1. Explicit specification
+        if spec_dir:
+            path = Path(spec_dir)
+            if path.exists():
+                return path
+            print(f"⚠️  Specified spec_dir not found: {spec_dir}")
+
+        # 2. Project root based
+        if self.project_root:
+            path = self.project_root / "src" / "specs"
+            if path.exists():
+                return path
+
+        # 3. Search common locations
+        current = Path.cwd()
+        search_paths = [
+            current / "src" / "specs",
+            current / "specs",
+            current.parent / "src" / "specs",
+            current.parent / "specs",
+            current / "AluBDDVerilog" / "src" / "specs",
+            current.parent / "AluBDDVerilog" / "src" / "specs",
+        ]
+
+        for path in search_paths:
+            if path.exists():
+                self._debug_print(f"Found specs at: {path}", "SUCCESS")
+                return path
+
+        # 4. Fallback to absolute path (Windows specific)
+        fallback_path = Path(r"D:\DE\HdlFormalVerifierLLM\HdlFormalVerifier\AluBDDVerilog\src\specs")
+        if fallback_path.exists():
+            self._debug_print(f"Using fallback path: {fallback_path}", "INFO")
+            return fallback_path
+
+        # 5. Create default location
+        default = current / "specs"
+        default.mkdir(parents=True, exist_ok=True)
+        print(f"⚠️  No existing specs directory found, created: {default}")
+        return default
+
+    def _setup_output_dir(self, output_dir: Optional[str]) -> Path:
+        """Setup output directory for Verilog files"""
+        if output_dir:
+            path = Path(output_dir)
+        elif self.project_root:
+            path = self.project_root / "output" / "verilog"
+        else:
+            # Put output next to specs directory (output/verilog, same level as output/bdd)
+            path = self.spec_dir.parent.parent / "output" / "verilog"
+
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _debug_print(self, message: str, level: str = "INFO"):
+        """Debug output"""
+        if not self.debug and level == "DEBUG":
+            return
+
+        icons = {
+            "INFO": "ℹ️ ",
+            "DEBUG": "🔍",
+            "WARN": "⚠️ ",
+            "ERROR": "❌",
+            "SUCCESS": "✅",
+            "STEP": "📌",
+        }
+        icon = icons.get(level, "  ")
+        print(f"   {icon} [{level}] {message}")
+
+    def scan_specs(self) -> List[Path]:
+        """
+        Scan specs directory for specification files.
 
         Returns:
-            Dictionary containing the generated specification
+            List of spec file paths (JSON preferred over TXT)
         """
+        print(f"\n🔍 Scanning for specs in: {self.spec_dir}")
 
-        print(f"Generating specification from user input...")
+        json_files = list(self.spec_dir.glob("*.json"))
+        txt_files = list(self.spec_dir.glob("*.txt"))
 
-        # Create prompt for LLM
-        prompt = self._create_spec_prompt(user_input)
+        # Prefer JSON files
+        spec_files = json_files if json_files else txt_files
 
-        # Get LLM response
-        if HAS_LLM:
-            print(f"✓ Using LLM: {llm_provider} / {model}")
-            try:
-                spec_text = get_llm_response(prompt, provider=llm_provider, model=model)
-            except Exception as e:
-                print(f"⚠️  LLM call failed: {e}")
-                print("⚠️  Falling back to template mode")
-                spec_text = self._create_basic_spec(user_input)
+        if not spec_files:
+            print(f"   ⚠️  No spec files found in {self.spec_dir}")
+            return []
+
+        print(f"   ✅ Found {len(spec_files)} spec file(s):")
+        for f in spec_files:
+            print(f"      • {f.name}")
+
+        return spec_files
+
+    def load_spec(self, spec_path: Path) -> Dict:
+        """
+        Load specification from file.
+
+        Args:
+            spec_path: Path to spec file
+
+        Returns:
+            Specification dictionary
+        """
+        print(f"\n📖 Loading spec: {spec_path.name}")
+
+        if spec_path.suffix == '.json':
+            return self._load_json_spec(spec_path)
         else:
-            print(f"⚠️  Using template mode (LLM not available)")
-            # Fallback: create a basic spec template
-            spec_text = self._create_basic_spec(user_input)
+            return self._load_txt_spec(spec_path)
 
-        # Parse and structure the specification
-        spec_dict = self._parse_spec_response(spec_text, user_input)
+    def _load_json_spec(self, path: Path) -> Dict:
+        """Load JSON specification"""
+        with open(path, 'r', encoding='utf-8') as f:
+            spec = json.load(f)
 
-        return spec_dict
+        self._debug_print(f"Loaded JSON spec: {spec.get('module_name', 'unknown')}", "SUCCESS")
+        self._debug_print(f"Bitwidth: {spec.get('bitwidth', 16)}", "DEBUG")
+        self._debug_print(f"Operations: {len(spec.get('operations', []))}", "DEBUG")
 
-    def _create_spec_prompt(self, user_input: str) -> str:
-        """Create prompt for LLM to generate specification"""
-
-        prompt = f"""You are a hardware design specification expert. Convert the following user requirements into a formal, detailed ALU (Arithmetic Logic Unit) specification.
-
-User Requirements:
-{user_input}
-
-Generate a complete specification document that includes:
-
-1. MODULE INFORMATION
-   - Module name (e.g., alu_8bit, alu_16bit)
-   - Bit width (e.g., 8-bit, 16-bit, 32-bit)
-   - Brief description
-
-2. INTERFACE DEFINITION
-   Inputs:
-   - a[N-1:0]: First operand (N-bit)
-   - b[N-1:0]: Second operand (N-bit)
-   - opcode[M-1:0]: Operation select (M-bit)
-   
-   Outputs:
-   - result[N-1:0]: Operation result (N-bit)
-   - carry: Carry/borrow flag
-   - zero: Zero flag
-   - negative: Negative flag
-   - overflow: Overflow flag
-
-3. OPERATIONS AND OPCODES
-   List all supported operations with opcodes:
-   - 0000: ADD - Addition (A + B)
-   - 0001: SUB - Subtraction (A - B)
-   - 0010: AND - Bitwise AND (A & B)
-   - 0011: OR - Bitwise OR (A | B)
-   [... continue for all operations]
-
-4. FLAG DEFINITIONS
-   - Carry: Set when operation produces a carry
-   - Zero: Set when result is zero
-   - Negative: Set when result MSB is 1
-   - Overflow: Set for signed arithmetic overflow
-
-5. FUNCTIONAL DESCRIPTION
-   - Detailed description of ALU behavior
-   - How each operation works
-   - Edge cases and special conditions
-
-6. TEST EXAMPLES
-   Provide at least 5 example operations:
-   Example 1: 15 + 10 = 25 (ADD, no overflow)
-   Example 2: 255 + 1 = 0 (ADD, with overflow)
-   [... more examples]
-
-Format your response as a clear, structured document.
-"""
-        return prompt
-
-    def _create_basic_spec(self, user_input: str) -> str:
-        """Create a basic specification template when LLM is not available"""
-
-        import re
-        bitwidth_match = re.search(r'(\d+)[-\s]bit', user_input, re.IGNORECASE)
-        bitwidth = int(bitwidth_match.group(1)) if bitwidth_match else 8
-
-        spec = f"""
-MODULE INFORMATION
-==================
-Module Name: alu_{bitwidth}bit
-Bit Width: {bitwidth}-bit
-Description: {bitwidth}-bit Arithmetic Logic Unit
-
-INTERFACE DEFINITION
-====================
-Inputs:
-  - a[{bitwidth-1}:0]: First operand ({bitwidth}-bit)
-  - b[{bitwidth-1}:0]: Second operand ({bitwidth}-bit)
-  - opcode[3:0]: Operation select (4-bit)
-
-Outputs:
-  - result[{bitwidth-1}:0]: Operation result ({bitwidth}-bit)
-  - carry: Carry/borrow flag
-  - zero: Zero flag (result == 0)
-  - negative: Negative flag (result[{bitwidth-1}] == 1)
-  - overflow: Overflow flag
-
-OPERATIONS AND OPCODES
-=======================
-0000: ADD - Addition (A + B)
-0001: SUB - Subtraction (A - B)
-0010: AND - Bitwise AND (A & B)
-0011: OR  - Bitwise OR (A | B)
-0100: XOR - Bitwise XOR (A ^ B)
-0101: SHL - Shift Left (A << 1)
-0110: SHR - Shift Right (A >> 1)
-0111: NOT - Bitwise NOT (~A)
-
-FLAG DEFINITIONS
-================
-- Carry: Set when addition produces carry or subtraction produces borrow
-- Zero: Set when result equals zero
-- Negative: Set when result MSB is 1 (for signed interpretation)
-- Overflow: Set when signed arithmetic overflow occurs
-
-FUNCTIONAL DESCRIPTION
-======================
-The ALU performs arithmetic and logic operations based on the opcode input.
-Results are computed combinationally and flags are set accordingly.
-
-TEST EXAMPLES
-=============
-Example 1: 15 ADD 10 = 25 (Carry=0, Zero=0)
-Example 2: 255 ADD 1 = 0 (Carry=1, Zero=1, Overflow detected)
-Example 3: 20 SUB 10 = 10 (Carry=0, Zero=0)
-Example 4: 0xFF AND 0x0F = 0x0F
-Example 5: 0xF0 OR 0x0F = 0xFF
-"""
         return spec
 
-    def _parse_spec_response(self, spec_text: str, original_input: str) -> Dict:
-        """Parse LLM response and structure it"""
+    def _load_txt_spec(self, path: Path) -> Dict:
+        """Load and parse TXT specification"""
+        with open(path, 'r', encoding='utf-8') as f:
+            content = f.read()
 
-        # Extract bit width
-        import re
-        bitwidth_match = re.search(r'(\d+)[-\s]bit', spec_text, re.IGNORECASE)
-        bitwidth = int(bitwidth_match.group(1)) if bitwidth_match else 8
+        # Extract bitwidth
+        bitwidth_match = re.search(r'(\d+)[-\s]?bit', content, re.IGNORECASE)
+        bitwidth = int(bitwidth_match.group(1)) if bitwidth_match else 16
 
-        # Create structured specification
-        spec_dict = {
-            'original_input': original_input,
-            'bitwidth': bitwidth,
-            'spec_text': spec_text,
-            'timestamp': self._get_timestamp(),
-            'version': '1.0'
+        # Extract operations from OPERATIONS section
+        operations = []
+        op_match = re.search(r'OPERATIONS.*?(?=\n\n|\nFLAG|\nINTERFACE|\nTEST|\Z)', content, re.DOTALL | re.IGNORECASE)
+
+        if op_match:
+            op_section = op_match.group(0)
+            for line in op_section.split('\n'):
+                # Match pattern like "0000: ADD - Addition"
+                match = re.match(r'(\d{4}):\s*(\w+)\s*[-–]\s*(.+)', line.strip())
+                if match:
+                    operations.append({
+                        "opcode": match.group(1),
+                        "name": match.group(2),
+                        "description": match.group(3).strip()
+                    })
+
+        # If no operations found, use defaults
+        if not operations:
+            operations = [
+                {"name": k, "opcode": v["opcode"], "description": v["description"]}
+                for k, v in list(self.OPERATION_TEMPLATES.items())[:4]
+            ]
+
+        spec = {
+            "module_name": f"alu_{bitwidth}bit",
+            "bitwidth": bitwidth,
+            "operations": operations,
+            "raw_text": content
         }
 
-        return spec_dict
+        self._debug_print(f"Parsed TXT spec: {spec['module_name']}", "SUCCESS")
+        return spec
 
-    def save_spec(self, spec_dict: Dict, filename: Optional[str] = None) -> Path:
+    def generate_verilog(self, spec: Dict) -> str:
         """
-        Save specification to files
+        Generate Verilog ALU module from specification.
 
         Args:
-            spec_dict: Specification dictionary
-            filename: Optional filename (without extension)
+            spec: Specification dictionary
 
         Returns:
-            Path to the saved specification file
+            Complete Verilog module code
         """
-        if filename is None:
-            filename = f"alu_{spec_dict['bitwidth']}bit_spec"
+        print(f"\n🔧 Generating Verilog ALU module...")
 
-        # Save as text file (main format for paper traceability)
-        txt_path = self.output_dir / f"{filename}.txt"
-        with open(txt_path, 'w', encoding='utf-8') as f:
-            f.write("=" * 80 + "\n")
-            f.write("ALU SPECIFICATION DOCUMENT\n")
-            f.write("=" * 80 + "\n\n")
-            f.write(f"Generated: {spec_dict['timestamp']}\n")
-            f.write(f"Version: {spec_dict['version']}\n")
-            f.write(f"Bit Width: {spec_dict['bitwidth']}-bit\n")
-            f.write("\n" + "=" * 80 + "\n\n")
-            f.write("ORIGINAL USER INPUT:\n")
-            f.write("-" * 80 + "\n")
-            f.write(spec_dict['original_input'] + "\n")
-            f.write("\n" + "=" * 80 + "\n\n")
-            f.write("FORMAL SPECIFICATION:\n")
-            f.write("-" * 80 + "\n")
-            f.write(spec_dict['spec_text'] + "\n")
-            f.write("\n" + "=" * 80 + "\n")
+        bitwidth = spec.get('bitwidth', 16)
+        module_name = spec.get('module_name', f'alu_{bitwidth}bit')
+        operations = spec.get('operations', [])
 
-        # Also save as JSON for easy parsing by other tools
-        json_path = self.output_dir / f"{filename}.json"
-        with open(json_path, 'w', encoding='utf-8') as f:
-            json.dump(spec_dict, f, indent=2, ensure_ascii=False)
+        self._debug_print(f"Module: {module_name}", "DEBUG")
+        self._debug_print(f"Bitwidth: {bitwidth}", "DEBUG")
+        self._debug_print(f"Operations: {len(operations)}", "DEBUG")
 
-        print(f"\n✓ Specification saved to:")
-        print(f"  - {txt_path}  (for paper/documentation)")
-        print(f"  - {json_path}  (for automated processing)")
+        # Generate Verilog code
+        verilog = self._generate_module_header(module_name, bitwidth)
+        verilog += self._generate_port_declarations(bitwidth)
+        verilog += self._generate_internal_signals(bitwidth)
+        verilog += self._generate_alu_logic(operations, bitwidth)
+        verilog += self._generate_flag_logic(bitwidth)
+        verilog += self._generate_module_footer()
 
-        return txt_path
+        self._debug_print(f"Generated {len(verilog)} characters of Verilog", "SUCCESS")
+        return verilog
 
-    def _get_timestamp(self) -> str:
-        """Get current timestamp"""
-        from datetime import datetime
-        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    def _generate_module_header(self, module_name: str, bitwidth: int) -> str:
+        """Generate module header with comments"""
+        return f"""//==============================================================================
+// ALU Module: {module_name}
+// Bitwidth: {bitwidth}-bit
+// Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+// Generator: alu_generator.py (deterministic, no LLM)
+//
+// This is a synthesizable {bitwidth}-bit ALU module generated from specification.
+// All operations are purely combinational.
+//==============================================================================
+
+`timescale 1ns / 1ps
+
+module {module_name} (
+"""
+
+    def _generate_port_declarations(self, bitwidth: int) -> str:
+        """Generate port declarations"""
+        return f"""    // Inputs
+    input  wire [{bitwidth - 1}:0] a,           // First operand
+    input  wire [{bitwidth - 1}:0] b,           // Second operand
+    input  wire [3:0]  opcode,      // Operation select
+
+    // Outputs
+    output reg  [{bitwidth - 1}:0] result,      // Operation result
+    output reg         zero,        // Zero flag (result == 0)
+    output reg         carry,       // Carry/borrow flag
+    output reg         overflow,    // Overflow flag (signed)
+    output reg         negative     // Negative flag (MSB of result)
+);
+
+"""
+
+    def _generate_internal_signals(self, bitwidth: int) -> str:
+        """Generate internal signal declarations"""
+        return f"""    //--------------------------------------------------------------------------
+    // Internal Signals
+    //--------------------------------------------------------------------------
+    reg [{bitwidth}:0] result_full;  // Extended result for carry detection
+
+    // Operation opcodes (from specification)
+    localparam OP_ADD = 4'b0000;
+    localparam OP_SUB = 4'b0001;
+    localparam OP_AND = 4'b0010;
+    localparam OP_OR  = 4'b0011;
+    localparam OP_XOR = 4'b0100;
+    localparam OP_NOT = 4'b0101;
+    localparam OP_SHL = 4'b0110;
+    localparam OP_SHR = 4'b0111;
+
+"""
+
+    def _generate_alu_logic(self, operations: List[Dict], bitwidth: int) -> str:
+        """Generate ALU operation logic"""
+        code = f"""    //--------------------------------------------------------------------------
+    // ALU Operation Logic (Combinational)
+    //--------------------------------------------------------------------------
+    always @(*) begin
+        // Default values
+        result_full = {{{bitwidth + 1}'b0}};
+
+        case (opcode)
+"""
+
+        # Generate case for each operation
+        for op in operations:
+            op_name = op.get('name', 'UNKNOWN')
+            opcode = op.get('opcode', '0000')
+
+            # Get Verilog template for this operation
+            if op_name in self.OPERATION_TEMPLATES:
+                template = self.OPERATION_TEMPLATES[op_name]
+                verilog_code = template['verilog'].format(result_full='result_full')
+                description = template['description']
+            else:
+                # Fallback for unknown operations
+                verilog_code = f"result_full = {{{bitwidth + 1}'b0}};"
+                description = f"Unknown operation: {op_name}"
+
+            code += f"""            // {description}
+            4'b{opcode}: begin
+                {verilog_code}
+            end
+
+"""
+
+        # Default case
+        code += f"""            // Default: No operation
+            default: begin
+                result_full = {{{bitwidth + 1}'b0}};
+            end
+        endcase
+    end
+
+"""
+        return code
+
+    def _generate_flag_logic(self, bitwidth: int) -> str:
+        """Generate flag calculation logic"""
+        return f"""    //--------------------------------------------------------------------------
+    // Flag Logic
+    //--------------------------------------------------------------------------
+    always @(*) begin
+        // Extract result (lower {bitwidth} bits)
+        result = result_full[{bitwidth - 1}:0];
+
+        // Zero flag: set when result is zero
+        zero = (result == {bitwidth}'b0);
+
+        // Carry flag: set from extended bit (for ADD/SUB)
+        carry = result_full[{bitwidth}];
+
+        // Negative flag: set when MSB is 1 (signed interpretation)
+        negative = result[{bitwidth - 1}];
+
+        // Overflow flag: signed overflow detection
+        // For ADD: overflow when both operands have same sign but result has different sign
+        // For SUB: overflow when operands have different signs and result sign != a's sign
+        case (opcode)
+            OP_ADD: overflow = (a[{bitwidth - 1}] == b[{bitwidth - 1}]) && (result[{bitwidth - 1}] != a[{bitwidth - 1}]);
+            OP_SUB: overflow = (a[{bitwidth - 1}] != b[{bitwidth - 1}]) && (result[{bitwidth - 1}] != a[{bitwidth - 1}]);
+            default: overflow = 1'b0;
+        endcase
+    end
+
+"""
+
+    def _generate_module_footer(self) -> str:
+        """Generate module footer"""
+        return """endmodule
+
+//==============================================================================
+// End of ALU Module
+//==============================================================================
+"""
+
+    def generate_all(self) -> List[Path]:
+        """
+        Generate Verilog files for all specs in the directory.
+
+        Returns:
+            List of generated Verilog file paths
+        """
+        print("\n" + "=" * 70)
+        print("🚀 ALU Generator - Starting Verilog generation")
+        print("=" * 70)
+
+        spec_files = self.scan_specs()
+
+        if not spec_files:
+            print("\n❌ No spec files found. Please run spec_generator.py first.")
+            return []
+
+        generated_files = []
+
+        for spec_path in spec_files:
+            try:
+                # Load spec
+                spec = self.load_spec(spec_path)
+
+                # Generate Verilog content
+                verilog_content = self.generate_verilog(spec)
+
+                # Save Verilog file
+                module_name = spec.get('module_name', 'alu')
+                verilog_name = f"{module_name}.v"
+                verilog_path = self.output_dir / verilog_name
+
+                with open(verilog_path, 'w', encoding='utf-8') as f:
+                    f.write(verilog_content)
+
+                print(f"\n✅ Generated: {verilog_path}")
+                generated_files.append(verilog_path)
+
+            except Exception as e:
+                print(f"\n❌ Error processing {spec_path.name}: {e}")
+                if self.debug:
+                    import traceback
+                    traceback.print_exc()
+
+        print("\n" + "=" * 70)
+        print(f"✨ Generation complete! Created {len(generated_files)} Verilog file(s)")
+        print("=" * 70)
+
+        return generated_files
+
+    def generate_from_spec_file(self, spec_path: Union[str, Path]) -> Path:
+        """
+        Generate Verilog file from a specific spec file.
+
+        Args:
+            spec_path: Path to the spec file
+
+        Returns:
+            Path to generated Verilog file
+        """
+        spec_path = Path(spec_path)
+
+        if not spec_path.exists():
+            raise FileNotFoundError(f"Spec file not found: {spec_path}")
+
+        spec = self.load_spec(spec_path)
+        verilog_content = self.generate_verilog(spec)
+
+        module_name = spec.get('module_name', 'alu')
+        verilog_name = f"{module_name}.v"
+        verilog_path = self.output_dir / verilog_name
+
+        with open(verilog_path, 'w', encoding='utf-8') as f:
+            f.write(verilog_content)
+
+        print(f"\n✅ Generated: {verilog_path}")
+        return verilog_path
 
 
 def main():
-    """Main function"""
+    """Main entry point"""
     parser = argparse.ArgumentParser(
-        description='Generate formal ALU specification from user requirements',
+        description='Generate Verilog ALU module from specification (No LLM)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  # Interactive mode
-  python spec_generator.py
-  
-  # From command line
-  python spec_generator.py -i "8-bit ALU with ADD, SUB, AND, OR operations"
-  
-  # Specify output directory
-  python spec_generator.py -i "16-bit ALU" -o ./my_specs
-  
-  # Use different LLM provider
-  python spec_generator.py -i "32-bit ALU" --llm gemini --model gemini-pro
+  # Generate from all specs in default directory
+  python alu_generator.py
+
+  # Specify spec directory
+  python alu_generator.py --spec-dir ./specs
+
+  # Generate from specific spec file
+  python alu_generator.py --spec-file ./specs/alu_16bit_spec.json
+
+  # Custom output directory
+  python alu_generator.py --output-dir ./output/verilog
+
+  # With project root
+  python alu_generator.py --project-root D:/DE/HdlFormalVerifierLLM/HdlFormalVerifier/AluBDDVerilog
+
+Note: This generator does NOT use LLM. It performs deterministic
+transformation from spec to synthesizable Verilog code.
+
+Output Structure:
+  output/
+  ├── bdd/           ← from bdd_generator.py
+  │   └── *.feature
+  └── verilog/       ← from this file
+      └── *.v
         '''
     )
 
-    parser.add_argument('-i', '--input',
-                       help='User requirements (natural language)',
-                       default=None)
-
-    parser.add_argument('-o', '--output-dir',
-                       help='Output directory for specification files',
-                       default='./specs')
-
-    parser.add_argument('--llm',
-                       help='LLM provider to use',
-                       default='openai',
-                       choices=['openai', 'claude', 'gemini', 'groq', 'deepseek'])
-
-    parser.add_argument('--model',
-                       help='Model name to use',
-                       default='gpt-4')
+    parser.add_argument('--spec-dir', help='Directory containing spec files')
+    parser.add_argument('--spec-file', help='Specific spec file to process')
+    parser.add_argument('--output-dir', help='Output directory for Verilog files')
+    parser.add_argument('--project-root', help='Project root directory')
+    parser.add_argument('--debug', action='store_true', default=True, help='Enable debug output')
 
     args = parser.parse_args()
 
-    print("=" * 80)
-    print("SPEC Generator - Generate Formal ALU Specification")
-    print("This creates the single source of truth for independent generation")
-    print("=" * 80)
-    print()
-
-    # Get user input
-    if args.input:
-        user_input = args.input
-    else:
-        print("Please enter your ALU requirements (natural language):")
-        print("Example: 'I need an 8-bit ALU that supports ADD, SUB, AND, OR operations'")
-        print()
-        user_input = input("Your requirements: ").strip()
-
-        if not user_input:
-            print("Error: No input provided.")
-            return
-
-    print(f"\nUser Input: {user_input}")
-    print()
-
     # Create generator
-    generator = SpecGenerator(output_dir=args.output_dir)
-
-    # Generate specification
-    spec_dict = generator.generate_spec(
-        user_input=user_input,
-        llm_provider=args.llm,
-        model=args.model
+    generator = ALUGenerator(
+        spec_dir=args.spec_dir,
+        output_dir=args.output_dir,
+        project_root=args.project_root,
+        debug=args.debug
     )
 
-    # Save specification
-    spec_path = generator.save_spec(spec_dict)
+    # Generate
+    if args.spec_file:
+        # Single file mode
+        verilog_path = generator.generate_from_spec_file(args.spec_file)
+        print(f"\n📄 Generated: {verilog_path}")
+    else:
+        # Batch mode - process all specs
+        generated = generator.generate_all()
 
-    print()
-    print("=" * 80)
-    print("NEXT STEPS (Independent Generation Workflow):")
-    print("=" * 80)
-    print(f"1. Review the generated specification: {spec_path}")
-    print(f"2. Generate BDD scenarios:  python bdd_generator.py -s {spec_path}")
-    print(f"3. Generate Verilog DUT:    python alu_generator.py -s {spec_path}")
-    print(f"   [Note: Steps 2 and 3 are INDEPENDENT - order doesn't matter]")
-    print(f"4. Generate testbench:      python verilog_generator_enhanced.py")
-    print(f"5. Run simulation:          python simulation_controller.py")
-    print("=" * 80)
+        if generated:
+            print("\n📋 Generated files:")
+            for path in generated:
+                print(f"   • {path}")
+
+            print("\n📋 NEXT STEPS:")
+            print("=" * 70)
+            print(f"1. Review Verilog files in: {generator.output_dir}")
+            print(f"2. Generate testbench: python verilog_generator.py")
+            print(f"3. Run simulation:     iverilog -o sim ALU.v testbench.v && vvp sim")
+            print(f"4. View waveform:      gtkwave waveform.vcd")
+            print("=" * 70)
 
 
 if __name__ == "__main__":

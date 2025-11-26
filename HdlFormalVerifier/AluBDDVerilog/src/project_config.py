@@ -19,7 +19,7 @@ class ProjectConfig:
         'verilog': PROJECT_ROOT / 'verilog',
         'src': PROJECT_ROOT / 'src',
         'output': PROJECT_ROOT / 'output',
-        'bdd_json': PROJECT_ROOT / 'output' / 'bdd_json',
+        'bdd_spec': PROJECT_ROOT / 'output' / 'bdd_spec',
         'bdd': PROJECT_ROOT / 'output' / 'bdd',
         'specs1': PROJECT_ROOT / 'specs1',
         'reports': PROJECT_ROOT / 'output' / 'reports'

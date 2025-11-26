@@ -20,7 +20,7 @@ print("\n📁 步骤 1: 检查 llm_providers.py 文件...")
 
 try:
     # 尝试导入
-    from llm_providers import OpenAIProvider
+    from HdlFormalVerifier.tests.bdd_test.llm_providers import OpenAIProvider
 
     print("✅ 成功导入 llm_providers")
 

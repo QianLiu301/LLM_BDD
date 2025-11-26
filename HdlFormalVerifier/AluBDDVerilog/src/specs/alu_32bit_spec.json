@@ -1,0 +1,103 @@
+{
+  "module_name": "alu_32bit",
+  "bitwidth": 32,
+  "description": "32-bit Arithmetic Logic Unit",
+  "operations": [
+    {
+      "name": "ADD",
+      "opcode": "0000",
+      "description": "Addition (A + B)"
+    },
+    {
+      "name": "SUB",
+      "opcode": "0001",
+      "description": "Subtraction (A - B)"
+    },
+    {
+      "name": "AND",
+      "opcode": "0010",
+      "description": "Bitwise AND (A & B)"
+    },
+    {
+      "name": "OR",
+      "opcode": "0011",
+      "description": "Bitwise OR (A | B)"
+    }
+  ],
+  "interface": {
+    "inputs": [
+      {
+        "name": "a",
+        "width": 32,
+        "description": "First operand"
+      },
+      {
+        "name": "b",
+        "width": 32,
+        "description": "Second operand"
+      },
+      {
+        "name": "opcode",
+        "width": 4,
+        "description": "Operation select"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "result",
+        "width": 32,
+        "description": "Operation result"
+      },
+      {
+        "name": "zero",
+        "width": 1,
+        "description": "Zero flag"
+      },
+      {
+        "name": "carry",
+        "width": 1,
+        "description": "Carry flag"
+      },
+      {
+        "name": "overflow",
+        "width": 1,
+        "description": "Overflow flag"
+      },
+      {
+        "name": "negative",
+        "width": 1,
+        "description": "Negative flag"
+      }
+    ]
+  },
+  "test_cases": [
+    {
+      "operation": "ADD",
+      "a": 447638771,
+      "b": 485205712,
+      "expected": 932844483
+    },
+    {
+      "operation": "SUB",
+      "a": 488492436,
+      "b": 390035835,
+      "expected": 98456601
+    },
+    {
+      "operation": "AND",
+      "a": 894527156,
+      "b": 571459095,
+      "expected": 536954388
+    },
+    {
+      "operation": "OR",
+      "a": 1188272036,
+      "b": 1213629502,
+      "expected": 1322751934
+    }
+  ],
+  "_generated_by": "local_template",
+  "original_input": "I need a 32-bit ALU with ADD, SUB, AND, OR operations",
+  "timestamp": "2025-11-26 23:15:17",
+  "version": "1.0"
+}

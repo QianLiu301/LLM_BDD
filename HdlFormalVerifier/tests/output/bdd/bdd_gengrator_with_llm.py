@@ -3,6 +3,9 @@ Simple Natural Language to BDD Converter
 改进版：支持动态路径配置和自动保存到output/bdd目录
 Enhanced: OpenAI/ChatGPT with official SDK support - Updated for GPT-5 series
 Fixed: Better error handling for JSON parsing and missing fields
+Fixed: Enhanced debugging output for LLM responses
+
+Note: All GPT-5 models (including gpt-5.1-codex) use chat completions with JSON mode
 
 A simplified pipeline: Natural Language → Parameterized BDD scenarios
 (with Gherkin Scenario + Examples table).
@@ -15,7 +18,7 @@ import os
 from pathlib import Path
 from typing import List, Dict, Optional
 from datetime import datetime
-from HdlFormalVerifier.tests.bdd_test.llm_providers import LLMProvider, LLMFactory, LocalLLMProvider
+from llm_providers import LLMProvider, LLMFactory, LocalLLMProvider
 
 
 class SimpleBDDGenerator:
@@ -25,9 +28,11 @@ class SimpleBDDGenerator:
             self,
             llm_provider: Optional[LLMProvider] = None,
             output_dir: Optional[str] = None,
-            project_root: Optional[str] = None
+            project_root: Optional[str] = None,
+            debug: bool = True  # 🔧 新增：调试模式开关
     ):
         self.llm = llm_provider or LocalLLMProvider()
+        self.debug = debug  # 🔧 调试模式
 
         # ALU operation mapping
         self.operations = {
@@ -43,6 +48,31 @@ class SimpleBDDGenerator:
 
         # 动态路径配置
         self._setup_paths(project_root, output_dir)
+
+    def _debug_print(self, message: str, level: str = "INFO"):
+        """
+        🔧 统一的调试输出方法
+
+        Args:
+            message: 要输出的消息
+            level: 日志级别 (INFO, DEBUG, WARN, ERROR, SUCCESS)
+        """
+        if not self.debug and level == "DEBUG":
+            return
+
+        icons = {
+            "INFO": "ℹ️ ",
+            "DEBUG": "🔍",
+            "WARN": "⚠️ ",
+            "ERROR": "❌",
+            "SUCCESS": "✅",
+            "STEP": "📌",
+            "DATA": "📊",
+            "RAW": "📝",
+            "JSON": "🔧",
+        }
+        icon = icons.get(level, "  ")
+        print(f"   {icon} [{level}] {message}")
 
     def _setup_paths(self, project_root: Optional[str], output_dir: Optional[str]):
         """
@@ -156,7 +186,7 @@ class SimpleBDDGenerator:
         """
         Use LLM (or local heuristics) to extract intent from user input.
 
-        🔧 增强版：更好的错误处理和 JSON 验证
+        🔧 增强版：更好的错误处理、JSON 验证和详细调试输出
         """
 
         prompt = f"""Analyze this test scenario request and extract information in JSON format.
@@ -191,21 +221,38 @@ CRITICAL INSTRUCTIONS:
 """
 
         try:
+            # 🔧 检查 LLM provider 类型
+            llm_type = type(self.llm).__name__
+            self._debug_print(f"LLM Provider: {llm_type}", "INFO")
+
             if hasattr(self.llm, "_call_api"):
+                self._debug_print("Calling LLM API...", "STEP")
+
                 response = self.llm._call_api(
                     prompt,
                     max_tokens=300,
                     system_prompt="You are a helpful assistant that extracts structured information from user requests and outputs ONLY valid JSON. Never include markdown formatting."
                 )
 
-                # 🔍 DEBUG: 打印原始响应
-                print(f"   🔍 [DEBUG] LLM Raw Response: {repr(response[:200])}")
+                # 🔧 详细的调试输出
+                print("\n" + "-" * 50)
+                print("   📤 LLM API RESPONSE DETAILS:")
+                print("-" * 50)
+
+                # 原始响应
+                self._debug_print(f"Response Type: {type(response).__name__}", "DEBUG")
+                self._debug_print(f"Response Length: {len(response)} chars", "DEBUG")
+                print(f"   📝 [RAW] Full Response:\n   '''\n{response}\n   '''")
 
                 # 🔧 增强清理逻辑
+                original_response = response
                 response = response.strip()
+
+                self._debug_print(f"After strip(): {len(response)} chars", "DEBUG")
 
                 # 移除 markdown 代码块
                 if "```" in response:
+                    self._debug_print("Detected markdown code blocks, cleaning...", "JSON")
                     json_match = re.search(
                         r"```(?:json)?\s*(\{.*?\})\s*```",
                         response,
@@ -213,72 +260,91 @@ CRITICAL INSTRUCTIONS:
                     )
                     if json_match:
                         response = json_match.group(1)
+                        self._debug_print("Extracted JSON from code block", "JSON")
                     else:
                         # 如果没有找到完整的代码块，尝试移除所有 ```
                         response = response.replace("```json", "").replace("```", "")
+                        self._debug_print("Removed markdown markers", "JSON")
 
                 # 如果响应不是以 { 开头，尝试提取 JSON
                 if not response.startswith("{"):
+                    self._debug_print(f"Response doesn't start with '{{', starts with: '{response[:20]}...'", "WARN")
                     json_match = re.search(r'\{.*\}', response, re.DOTALL)
                     if json_match:
                         response = json_match.group(0)
+                        self._debug_print("Extracted JSON object using regex", "JSON")
+                    else:
+                        self._debug_print("No JSON object found in response!", "ERROR")
 
-                # 🔍 DEBUG: 打印清理后的响应
-                print(f"   🔍 [DEBUG] LLM Cleaned Response: {repr(response[:200])}")
+                # 🔧 打印清理后的响应
+                print(f"\n   🔧 [CLEANED] Response:\n   '''\n{response}\n   '''")
+                print("-" * 50)
 
-                # 解析 JSON
-                intent = json.loads(response)
+                # 🔧 尝试解析 JSON
+                self._debug_print("Attempting JSON parsing...", "JSON")
+
+                try:
+                    intent = json.loads(response)
+                    self._debug_print("JSON parsing successful!", "SUCCESS")
+
+                    # 打印解析后的字段
+                    print("\n   📊 [PARSED] Intent Fields:")
+                    for key, value in intent.items():
+                        print(f"      • {key}: {value}")
+                    print()
+
+                except json.JSONDecodeError as je:
+                    self._debug_print(f"JSON parsing failed: {je}", "ERROR")
+                    self._debug_print(f"Error position: char {je.pos}", "DEBUG")
+                    self._debug_print(
+                        f"Problematic content around error: '{response[max(0, je.pos - 20):je.pos + 20]}'", "DEBUG")
+                    raise
 
                 # 🔧 验证必需字段
                 required_fields = ['operation', 'condition', 'scenario_name', 'num_examples']
                 missing_fields = [f for f in required_fields if f not in intent]
 
                 if missing_fields:
-                    print(f"   ⚠️  JSON missing required fields: {missing_fields}")
-                    raise ValueError(f"Missing fields: {missing_fields}")
+                    self._debug_print(f"Missing required fields: {missing_fields}", "WARN")
+                    self._debug_print("Using fallback parser", "INFO")
+                    return self._fallback_parse(user_input)
 
-                # 🔧 标准化 operation 为大写
-                if 'operation' in intent:
-                    intent['operation'] = intent['operation'].upper()
-
-                # 🔧 确保 num_examples 是整数
-                if 'num_examples' in intent:
-                    try:
-                        intent['num_examples'] = int(intent['num_examples'])
-                    except (ValueError, TypeError):
-                        intent['num_examples'] = 3
-
-                print(f"   ✅ [SUCCESS] Valid JSON parsed with all required fields")
+                self._debug_print("All required fields present", "SUCCESS")
                 return intent
-
             else:
-                print(f"   ⚠️  LLM doesn't have _call_api method, using fallback")
+                self._debug_print("LLM has no _call_api method, using fallback", "WARN")
                 return self._fallback_parse(user_input)
 
         except json.JSONDecodeError as e:
-            print(f"   ❌ JSON parsing failed: {e}")
-            print(f"   📝 Response was: {response[:200]}...")
-            print(f"   🔄 Using local fallback parsing")
+            print(f"\n   ⚠️  JSON parsing failed: {e}")
+            print(f"   🔄 Using fallback parser")
             return self._fallback_parse(user_input)
-
         except Exception as e:
-            print(f"   ❌ LLM parsing failed: {e}")
-            print(f"   🔄 Using local fallback parsing")
+            print(f"\n   ⚠️  LLM parsing failed: {e}")
+            print(f"   🔄 Using fallback parser")
+            import traceback
+            if self.debug:
+                print(f"   📋 Traceback:")
+                traceback.print_exc()
             return self._fallback_parse(user_input)
 
     def _fallback_parse(self, user_input: str) -> Dict:
         """
         Local fallback parsing without LLM.
 
-        🔧 确保返回所有必需字段
+        🔧 改进版：更好的默认值和错误处理，添加调试输出
         """
+        print("\n   📌 [FALLBACK] Using local parser...")
+
         text = user_input.lower()
+        self._debug_print(f"Input text (lowercase): '{text}'", "DEBUG")
 
         # Detect operation
         operation = "ADD"  # 默认操作
         for op in self.operations.keys():
             if op.lower() in text:
                 operation = op
+                self._debug_print(f"Detected operation: {op}", "DEBUG")
                 break
 
         # Detect condition
@@ -292,15 +358,18 @@ CRITICAL INSTRUCTIONS:
         elif "random" in text or "various" in text:
             condition = "random"
 
+        self._debug_print(f"Detected condition: {condition}", "DEBUG")
+
         # Extract number of examples
         num_match = re.search(r"(\d+)\s*(?:examples?|cases?|scenarios?)", text)
         num_examples = int(num_match.group(1)) if num_match else 3
+        self._debug_print(f"Detected num_examples: {num_examples}", "DEBUG")
 
         # Infer expected result and flags (simple heuristic)
         expected_result = "0" if condition == "A = B" and operation == "SUB" else None
         zero_flag = True if expected_result == "0" else False
 
-        return {
+        result = {
             "operation": operation,
             "condition": condition,
             "scenario_name": f"{operation} with {condition}",
@@ -310,6 +379,14 @@ CRITICAL INSTRUCTIONS:
             "negative_flag": False,
             "tags": ["arithmetic"],
         }
+
+        # 打印 fallback 解析结果
+        print("\n   📊 [FALLBACK RESULT] Parsed Intent:")
+        for key, value in result.items():
+            print(f"      • {key}: {value}")
+        print()
+
+        return result
 
     def _calculate_alu_result(self, a: int, b: int, operation: str) -> Dict:
         """
@@ -433,8 +510,8 @@ Scenario: {scenario_name}
         return scenario
 
 
-def interactive_mode():
-    """Run the generator in interactive mode."""
+def interactive_mode(project_root: Optional[str] = None):
+    """Run the generator in interactive mode with provider selection."""
     print("=" * 70)
     print("🎯 BDD Scenario Generator - Interactive Mode")
     print("=" * 70)
@@ -446,66 +523,256 @@ def interactive_mode():
     print("\n💡 Tip: The more specific your request, the better the result!")
     print("Type 'quit' or 'exit' to stop.\n")
 
-    # 从环境变量或用户输入获取配置
-    provider_type = os.getenv("LLM_PROVIDER", "local").lower()
-    model = os.getenv("LLM_MODEL")
-    api_key = os.getenv("OPENAI_API_KEY") or os.getenv("GEMINI_API_KEY")
+    # Provider selection
+    llm = None
+    use_llm = input("Use LLM provider? (y/n, default: n): ").strip().lower()
 
-    # 创建 LLM provider
-    if provider_type == "local":
-        llm_provider = LocalLLMProvider()
+    if use_llm == 'y':
+        print("\nSelect LLM provider:")
+        print("\n🆓 FREE Providers (Recommended):")
+        print("  1. Local template (no external API, zero setup)")
+        print("  2. Google Gemini (FREE, 60 req/min) ⭐ Recommended")
+        print("  3. Groq (FREE, ultra-fast) ⚡")
+        print("  4. DeepSeek (FREE, Chinese LLM)")
+        print("\n💰 PAID Providers (High Quality):")
+        print("  5. OpenAI GPT-5 Series (with official SDK) 🎯 Best Quality")
+        print("  6. Anthropic Claude (premium)")
+
+        choice = input("\nYour choice (1-6): ").strip()
+
+        if choice == "2":
+            # Google Gemini
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                print("\n💡 Get FREE key at: https://makersuite.google.com/app/apikey")
+                api_key = input("Enter Gemini API key: ").strip()
+            llm = LLMFactory.create_provider("gemini", api_key=api_key)
+        elif choice == "3":
+            # Groq
+            api_key = os.getenv("GROQ_API_KEY")
+            if not api_key:
+                print("\n💡 Get FREE key at: https://console.groq.com/keys")
+                api_key = input("Enter Groq API key: ").strip()
+            llm = LLMFactory.create_provider("groq", api_key=api_key)
+        elif choice == "4":
+            # DeepSeek
+            api_key = os.getenv("DEEPSEEK_API_KEY")
+            if not api_key:
+                print("\n💡 Get key at: https://platform.deepseek.com/")
+                api_key = input("Enter DeepSeek API key: ").strip()
+            llm = LLMFactory.create_provider("deepseek", api_key=api_key)
+        elif choice == "5":
+            # OpenAI GPT-5
+            api_key = os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                print("\n💡 Get API key at: https://platform.openai.com/api-keys")
+                api_key = input("Enter OpenAI API key: ").strip()
+
+            # 选择GPT-5模型
+            print("\n🤖 Select GPT-5 model:")
+            print("  1. gpt-5-mini (Recommended - Best value)")
+            print("  2. gpt-5 (Balanced performance)")
+            print("  3. gpt-5.1 (Most capable)")
+            print("  4. gpt-5.1-codex (Specialized for code)")
+            model_choice = input("Model choice (1-4, default: 1): ").strip() or "1"
+
+            model_map = {
+                "1": "gpt-5-mini",
+                "2": "gpt-5",
+                "3": "gpt-5.1",
+                "4": "gpt-5.1-codex"
+            }
+            model = model_map.get(model_choice, "gpt-5-mini")
+
+            llm = LLMFactory.create_provider("openai", api_key=api_key, model=model)
+            print(f"✅ Using OpenAI GPT-5 model: {model}")
+
+        elif choice == "6":
+            # Claude
+            api_key = os.getenv("ANTHROPIC_API_KEY")
+            if not api_key:
+                print("\n💡 Get API key at: https://console.anthropic.com/")
+                api_key = input("Enter Anthropic API key: ").strip()
+            llm = LLMFactory.create_provider("claude", api_key=api_key)
+        else:
+            llm = LocalLLMProvider()
     else:
-        try:
-            kwargs = {}
-            if api_key:
-                kwargs["api_key"] = api_key
-            if model:
-                kwargs["model"] = model
+        llm = LocalLLMProvider()
 
-            llm_provider = LLMFactory.create_provider(provider_type, **kwargs)
-        except Exception as e:
-            print(f"⚠️  Failed to create {provider_type} provider: {e}")
-            print("🔄 Falling back to local provider")
-            llm_provider = LocalLLMProvider()
+    generator = SimpleBDDGenerator(llm, project_root=project_root, debug=True)
 
-    # 创建生成器
-    generator = SimpleBDDGenerator(llm_provider=llm_provider)
+    print("\n" + "=" * 70)
+    print("🚀 Ready! Type 'quit' or 'exit' to leave.\n")
 
     while True:
         try:
-            user_input = input("💬 Describe your test scenario: ")
+            user_input = input("\n💬 Describe your test scenario: ").strip()
 
             if user_input.lower() in ["quit", "exit", "q"]:
-                print("\n👋 Goodbye!")
+                print("\n👋 Bye!")
                 break
 
-            if not user_input.strip():
+            if not user_input:
                 continue
 
-            # 生成场景
+            # Generate BDD scenario
             scenario = generator.generate_from_natural_language(user_input)
 
-            # 显示结果
+            # Show result
             print("\n" + "=" * 70)
-            print("✅ Generated BDD Scenario:")
+            print("✨ Generated BDD Scenario:")
             print("=" * 70)
             print(scenario)
+            print("=" * 70)
 
-            # 自动保存
-            filepath = generator.save_scenario(scenario)
+            # Ask whether to save
+            save = input("\n💾 Save to output/bdd directory? (y/n): ").strip().lower()
+            if save == "y":
+                use_auto_name = input("Use auto-generated filename? (y/n, default: y): ").strip().lower()
 
-            # 询问是否继续
-            print("\n" + "=" * 70)
+                if use_auto_name != 'n':
+                    # 使用自动命名
+                    filepath = generator.save_scenario(scenario, auto_name=True)
+                else:
+                    # 手动输入文件名
+                    filename = input("📝 File name (e.g., my_test.feature): ").strip()
+                    filepath = generator.save_scenario(scenario, filename=filename, auto_name=False)
+
+                print(f"   📂 Saved at: {filepath}")
 
         except KeyboardInterrupt:
-            print("\n\n👋 Interrupted. Goodbye!")
+            print("\n\n⚠️ Interrupted by user")
             break
         except Exception as e:
             print(f"\n❌ Error: {e}")
             import traceback
             traceback.print_exc()
-            continue
+
+
+def main():
+    """Main entry point (CLI)."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Simple natural language → BDD scenario generator with GPT-5 support",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+Example usage:
+
+  # Interactive mode (saves to output/bdd)
+  python bdd_generator.py
+
+  # Specify project root
+  python bdd_generator.py --project-root D:/DE/HdlFormalVerifierLLM/HdlFormalVerifier/AluBDDVerilog
+
+  # Command-line mode with custom output
+  python bdd_generator.py --request "Generate SUB test where A equals B" --output-dir ./my_tests
+
+  # Use OpenAI GPT-5 with official SDK (recommended)
+  python bdd_generator.py --llm-provider openai --api-key your-key --model gpt-5-mini
+
+  # Use different GPT-5 models
+  python bdd_generator.py --llm-provider openai --model gpt-5
+  python bdd_generator.py --llm-provider openai --model gpt-5.1
+  python bdd_generator.py --llm-provider openai --model gpt-5.1-codex
+
+  # Use alternative names for OpenAI
+  python bdd_generator.py --llm-provider gpt --api-key your-key
+  python bdd_generator.py --llm-provider gpt5 --api-key your-key
+
+  # Full example
+  python bdd_generator.py \\
+    --project-root D:/DE/HdlFormalVerifierLLM/HdlFormalVerifier/AluBDDVerilog \\
+    --request "Generate SUB test where A equals B with 5 examples" \\
+    --llm-provider openai \\
+    --model gpt-5-mini
+        """,
+    )
+
+    parser.add_argument(
+        "--request",
+        help="Provide a test scenario description directly (non-interactive mode)",
+    )
+
+    parser.add_argument(
+        "--llm-provider",
+        choices=["local", "openai", "gpt", "gpt5", "chatgpt", "gemini", "google", "groq", "deepseek", "claude",
+                 "anthropic"],
+        default="local",
+        help="LLM provider (default: local). Use 'openai', 'gpt', or 'gpt5' for OpenAI GPT-5",
+    )
+
+    parser.add_argument(
+        "--api-key",
+        help="API key for the selected LLM provider",
+    )
+
+    parser.add_argument(
+        "--model",
+        help="Model name (e.g., gpt-5-mini, gpt-5, gpt-5.1, gpt-5.1-codex for GPT-5 series)",
+    )
+
+    parser.add_argument(
+        "--project-root",
+        help="Project root directory (output will be saved to {project_root}/output/bdd)",
+    )
+
+    parser.add_argument(
+        "--output-dir",
+        help="Custom output directory (overrides project-root/output/bdd)",
+    )
+
+    parser.add_argument(
+        "--filename",
+        help="Custom filename for the generated scenario",
+    )
+
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=True,
+        help="Enable debug output (default: True)",
+    )
+
+    args = parser.parse_args()
+
+    # Create LLM provider
+    llm_config: Dict = {}
+    if args.api_key:
+        llm_config["api_key"] = args.api_key
+    if args.model:
+        llm_config["model"] = args.model
+
+    llm = LLMFactory.create_provider(args.llm_provider, **llm_config)
+    generator = SimpleBDDGenerator(
+        llm,
+        output_dir=args.output_dir,
+        project_root=args.project_root,
+        debug=args.debug
+    )
+
+    if args.request:
+        # Non-interactive mode
+        scenario = generator.generate_from_natural_language(args.request)
+
+        print("\n" + "=" * 70)
+        print("✨ Generated BDD Scenario:")
+        print("=" * 70)
+        print(scenario)
+        print("=" * 70)
+
+        # 自动保存到output/bdd
+        filepath = generator.save_scenario(
+            scenario,
+            filename=args.filename,
+            auto_name=(args.filename is None)
+        )
+        print(f"\n✅ Saved to {filepath}")
+
+    else:
+        # Interactive mode
+        interactive_mode(project_root=args.project_root)
 
 
 if __name__ == "__main__":
-    interactive_mode()
+    main()

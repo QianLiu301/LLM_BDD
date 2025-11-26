@@ -1,0 +1,72 @@
+{
+  "scenario": "Given ALU operation, When executed, Then produce correct output",
+  "operation": "UNKNOWN",
+  "opcode": "0000",
+  "bitwidth": 16,
+  "error": "Fallback response due to API failure",
+  "original_input": "8-bit ALU with full arithmetic and logic operations",
+  "timestamp": "2025-11-26 23:09:55",
+  "version": "1.0",
+  "operations": [
+    {
+      "name": "AND",
+      "opcode": "0010",
+      "description": "Bitwise AND (A & B)"
+    }
+  ],
+  "interface": {
+    "inputs": [
+      {
+        "name": "a",
+        "width": 16,
+        "description": "First operand"
+      },
+      {
+        "name": "b",
+        "width": 16,
+        "description": "Second operand"
+      },
+      {
+        "name": "opcode",
+        "width": 4,
+        "description": "Operation select"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "result",
+        "width": 16,
+        "description": "Operation result"
+      },
+      {
+        "name": "zero",
+        "width": 1,
+        "description": "Zero flag"
+      },
+      {
+        "name": "carry",
+        "width": 1,
+        "description": "Carry flag"
+      },
+      {
+        "name": "overflow",
+        "width": 1,
+        "description": "Overflow flag"
+      },
+      {
+        "name": "negative",
+        "width": 1,
+        "description": "Negative flag"
+      }
+    ]
+  },
+  "module_name": "alu_16bit",
+  "test_cases": [
+    {
+      "operation": "AND",
+      "a": 6455,
+      "b": 5371,
+      "expected": 4147
+    }
+  ]
+}

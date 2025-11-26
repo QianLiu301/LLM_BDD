@@ -1,0 +1,103 @@
+{
+  "module_name": "alu_64bit",
+  "bitwidth": 64,
+  "description": "64-bit Arithmetic Logic Unit",
+  "operations": [
+    {
+      "name": "ADD",
+      "opcode": "0000",
+      "description": "Addition (A + B)"
+    },
+    {
+      "name": "SUB",
+      "opcode": "0001",
+      "description": "Subtraction (A - B)"
+    },
+    {
+      "name": "AND",
+      "opcode": "0010",
+      "description": "Bitwise AND (A & B)"
+    },
+    {
+      "name": "OR",
+      "opcode": "0011",
+      "description": "Bitwise OR (A | B)"
+    }
+  ],
+  "interface": {
+    "inputs": [
+      {
+        "name": "a",
+        "width": 64,
+        "description": "First operand"
+      },
+      {
+        "name": "b",
+        "width": 64,
+        "description": "Second operand"
+      },
+      {
+        "name": "opcode",
+        "width": 4,
+        "description": "Operation select"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "result",
+        "width": 64,
+        "description": "Operation result"
+      },
+      {
+        "name": "zero",
+        "width": 1,
+        "description": "Zero flag"
+      },
+      {
+        "name": "carry",
+        "width": 1,
+        "description": "Carry flag"
+      },
+      {
+        "name": "overflow",
+        "width": 1,
+        "description": "Overflow flag"
+      },
+      {
+        "name": "negative",
+        "width": 1,
+        "description": "Negative flag"
+      }
+    ]
+  },
+  "test_cases": [
+    {
+      "operation": "ADD",
+      "a": 6611741658222407741,
+      "b": 4357289204881020249,
+      "expected": 10969030863103427990
+    },
+    {
+      "operation": "SUB",
+      "a": 4876035818053871011,
+      "b": 4134329357896839802,
+      "expected": 741706460157031209
+    },
+    {
+      "operation": "AND",
+      "a": 8074205120452122580,
+      "b": 6225968234698881668,
+      "expected": 5766036919021474436
+    },
+    {
+      "operation": "OR",
+      "a": 4002407580439107307,
+      "b": 6193086936702663520,
+      "expected": 8645622647249928171
+    }
+  ],
+  "_generated_by": "local_template",
+  "original_input": "I need a 64-bit ALU with ADD, SUB, AND, OR operations",
+  "timestamp": "2025-11-26 23:15:27",
+  "version": "1.0"
+}

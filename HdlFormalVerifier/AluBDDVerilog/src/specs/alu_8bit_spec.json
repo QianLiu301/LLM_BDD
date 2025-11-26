@@ -1,0 +1,103 @@
+{
+  "module_name": "alu_8bit",
+  "bitwidth": 8,
+  "description": "8-bit Arithmetic Logic Unit",
+  "operations": [
+    {
+      "name": "ADD",
+      "opcode": "0000",
+      "description": "Addition (A + B)"
+    },
+    {
+      "name": "SUB",
+      "opcode": "0001",
+      "description": "Subtraction (A - B)"
+    },
+    {
+      "name": "AND",
+      "opcode": "0010",
+      "description": "Bitwise AND (A & B)"
+    },
+    {
+      "name": "OR",
+      "opcode": "0011",
+      "description": "Bitwise OR (A | B)"
+    }
+  ],
+  "interface": {
+    "inputs": [
+      {
+        "name": "a",
+        "width": 8,
+        "description": "First operand"
+      },
+      {
+        "name": "b",
+        "width": 8,
+        "description": "Second operand"
+      },
+      {
+        "name": "opcode",
+        "width": 4,
+        "description": "Operation select"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "result",
+        "width": 8,
+        "description": "Operation result"
+      },
+      {
+        "name": "zero",
+        "width": 1,
+        "description": "Zero flag"
+      },
+      {
+        "name": "carry",
+        "width": 1,
+        "description": "Carry flag"
+      },
+      {
+        "name": "overflow",
+        "width": 1,
+        "description": "Overflow flag"
+      },
+      {
+        "name": "negative",
+        "width": 1,
+        "description": "Negative flag"
+      }
+    ]
+  },
+  "test_cases": [
+    {
+      "operation": "ADD",
+      "a": 24,
+      "b": 2,
+      "expected": 26
+    },
+    {
+      "operation": "SUB",
+      "a": 20,
+      "b": 33,
+      "expected": 243
+    },
+    {
+      "operation": "AND",
+      "a": 27,
+      "b": 34,
+      "expected": 2
+    },
+    {
+      "operation": "OR",
+      "a": 64,
+      "b": 49,
+      "expected": 113
+    }
+  ],
+  "_generated_by": "local_template",
+  "original_input": "I need a 8-bit ALU with ADD, SUB, AND, OR operations",
+  "timestamp": "2025-11-26 23:15:04",
+  "version": "1.0"
+}

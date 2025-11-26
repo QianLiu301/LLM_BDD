@@ -343,7 +343,7 @@ if __name__ == '__main__':
                         help='操作码（0-15）')
     parser.add_argument('--open-wave', action='store_true',
                         help='自动打开波形查看器')
-    parser.add_argument('--only-bdd_json', action='store_true',
+    parser.add_argument('--only-bdd_spec', action='store_true',
                         help='仅生成BDD测试')
 
     args = parser.parse_args()

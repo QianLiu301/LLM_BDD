@@ -42,7 +42,7 @@
 #             "verilog",
 #             "src",
 #             "specs",
-#             "output/bdd_json",
+#             "output/bdd_spec",
 #             "output/bdd",
 #             "output/verilog",
 #             "output/simulation"

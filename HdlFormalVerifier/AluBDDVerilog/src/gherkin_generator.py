@@ -304,7 +304,7 @@ Then('the result should be correct', function() {{
 
 if __name__ == "__main__":
     # Simple test runner
-    from alu_parser import ALUParser
+    from HdlFormalVerifier.tests.alu_parser import ALUParser
 
     print("🧪 Testing the LLM-enhanced Gherkin generator\n")
 

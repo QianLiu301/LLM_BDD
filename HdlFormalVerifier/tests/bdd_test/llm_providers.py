@@ -5,14 +5,11 @@ Updated to support GPT-5 series models: gpt-5.1-codex, gpt-5.1, gpt-5, gpt-5-min
 
 Fixed: gpt-5.1-codex uses completions endpoint (v1/completions) not chat completions
 Other GPT-5 models use chat completions endpoint (v1/chat/completions)
-
-🔧 FIXED: _fallback_description now returns JSON format for intent parsing compatibility
 """
 
 import os
 import json
 import time
-import re
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional
 import requests
@@ -61,55 +58,6 @@ class LLMProvider(ABC):
         """Generate a Feature-level description"""
         pass
 
-    def _parse_intent_from_prompt(self, prompt: str) -> Dict:
-        """
-        🔧 从 prompt 中解析 intent 信息用于 fallback
-
-        当 API 失败时，尝试从原始 prompt 中提取关键信息
-        """
-        text = prompt.lower()
-
-        # 检测操作类型
-        operation = "ADD"
-        for op in ["ADD", "SUB", "AND", "OR", "XOR", "NOT", "SHL", "SHR"]:
-            if op.lower() in text:
-                operation = op
-                break
-
-        # 检测条件
-        condition = "random"
-        if "equal" in text or "same" in text or "a = b" in text or "a=b" in text:
-            condition = "A = B"
-        elif "greater" in text or "a > b" in text or "a>b" in text:
-            condition = "A > B"
-        elif "less" in text or "a < b" in text or "a<b" in text:
-            condition = "A < B"
-        elif "random" in text or "various" in text:
-            condition = "random"
-
-        # 检测示例数量
-        num_match = re.search(r"(\d+)\s*(?:examples?|cases?|scenarios?)", text)
-        num_examples = int(num_match.group(1)) if num_match else 3
-
-        return {
-            "operation": operation,
-            "condition": condition,
-            "scenario_name": f"{operation} with {condition}",
-            "num_examples": num_examples,
-            "tags": ["arithmetic"],
-            "_fallback": True,
-            "_fallback_reason": "API call failed, using local parsing"
-        }
-
-    def _fallback_intent_json(self, prompt: str) -> str:
-        """
-        🔧 返回 JSON 格式的 fallback intent
-
-        这个方法专门用于 _understand_intent() 调用失败时返回有效的 JSON
-        """
-        intent = self._parse_intent_from_prompt(prompt)
-        return json.dumps(intent, ensure_ascii=False, indent=2)
-
 
 # ========== FREE PROVIDERS ==========
 
@@ -148,12 +96,8 @@ class GeminiProvider(LLMProvider):
             self.use_sdk = False
             print("⚠️  Using REST API fallback. For better reliability, install: pip install -U google-genai")
 
-        # 🔧 保存最近的 prompt 用于 fallback 解析
-        self._last_prompt = ""
-
     def _call_api_sdk(self, prompt: str, max_tokens: int = 200, system_prompt: str = None) -> str:
         """使用新的 google-genai SDK 调用 API,包含重试和模型降级"""
-        self._last_prompt = prompt  # 🔧 保存 prompt
         last_error = None
 
         for model_name in self.models_to_try:
@@ -188,7 +132,6 @@ class GeminiProvider(LLMProvider):
 
     def _call_api_rest(self, prompt: str, max_tokens: int = 200, system_prompt: str = None) -> str:
         """旧的 REST API 调用方式(作为备用)"""
-        self._last_prompt = prompt  # 🔧 保存 prompt
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
 
         payload = {
@@ -264,17 +207,7 @@ Generate a concise Feature description (2-4 sentences):
         return self._call_api(prompt, max_tokens=200)
 
     def _fallback_description(self, prompt: str) -> str:
-        """
-        🔧 修复: Fallback 返回 JSON 格式以支持 intent 解析
-
-        当 API 失败时，分析 prompt 并返回 JSON 格式的 intent
-        """
-        # 检查是否是 intent 解析请求（通过检查 prompt 中是否包含 JSON 相关指令）
-        if "JSON" in prompt or "json" in prompt or '"operation"' in prompt:
-            print("   🔧 [FALLBACK] Returning JSON format for intent parsing")
-            return self._fallback_intent_json(prompt)
-
-        # 否则返回普通文本描述
+        """Fallback description when API fails"""
         return "Test ALU operation with various input values and verify correct output"
 
 
@@ -376,12 +309,7 @@ Generate a concise Feature description (2-4 sentences):
         return self._call_api(prompt, max_tokens=200)
 
     def _fallback_description(self, prompt: str) -> str:
-        """
-        🔧 修复: Fallback 返回 JSON 格式以支持 intent 解析
-        """
-        if "JSON" in prompt or "json" in prompt or '"operation"' in prompt:
-            print("   🔧 [FALLBACK] Returning JSON format for intent parsing")
-            return self._fallback_intent_json(prompt)
+        """Fallback description when API fails"""
         return "Test ALU operation with various input values and verify correct output"
 
 
@@ -483,12 +411,7 @@ Generate a concise Feature description (2-4 sentences):
         return self._call_api(prompt, max_tokens=200)
 
     def _fallback_description(self, prompt: str) -> str:
-        """
-        🔧 修复: Fallback 返回 JSON 格式以支持 intent 解析
-        """
-        if "JSON" in prompt or "json" in prompt or '"operation"' in prompt:
-            print("   🔧 [FALLBACK] Returning JSON format for intent parsing")
-            return self._fallback_intent_json(prompt)
+        """Fallback description when API fails"""
         return "Test ALU operation with various input values and verify correct output"
 
 
@@ -1011,12 +934,7 @@ Generate a concise Feature description (2-4 sentences):
         return self._call_api(prompt, max_tokens=200)
 
     def _fallback_description(self, prompt: str) -> str:
-        """
-        🔧 修复: Fallback 返回 JSON 格式以支持 intent 解析
-        """
-        if "JSON" in prompt or "json" in prompt or '"operation"' in prompt:
-            print("   🔧 [FALLBACK] Returning JSON format for intent parsing")
-            return self._fallback_intent_json(prompt)
+        """Fallback description when API fails"""
         return "Test ALU operation with various input values and verify correct output"
 
 
@@ -1235,20 +1153,9 @@ if __name__ == '__main__':
     provider = config.get_provider()
     print(f"   Provider type: {type(provider).__name__}\n")
 
-    # 🔧 测试 fallback JSON 生成
-    print("3️⃣  Testing Fallback JSON Generation:")
-    test_prompt = '''Analyze this test scenario request and extract information in JSON format.
-User Request: "Create ADD scenario with A = B, 3 examples"
-Extract:
-1. "operation": ALU operation (ADD, SUB, AND, OR, XOR, NOT, SHL, SHR)
-...'''
-
-    fallback_json = local_provider._fallback_intent_json(test_prompt)
-    print(f"   Fallback JSON:\n{fallback_json}\n")
-
     # 如果有 OpenAI API key,测试 OpenAI
     if os.getenv("OPENAI_API_KEY"):
-        print("4️⃣  Testing OpenAI Provider with gpt-5.1-codex:")
+        print("3️⃣  Testing OpenAI Provider with gpt-5.1-codex:")
         print("-" * 70)
         try:
             openai_provider = LLMFactory.create_provider("openai", model="gpt-5.1-codex")
@@ -1260,7 +1167,7 @@ Extract:
         except Exception as e:
             print(f"   Failed: {e}\n")
     else:
-        print("4️⃣  OpenAI API Key not found. Set OPENAI_API_KEY to test.")
+        print("3️⃣  OpenAI API Key not found. Set OPENAI_API_KEY to test.")
 
     print("=" * 70)
     print("✅ Testing completed!")
@@ -1270,4 +1177,3 @@ Extract:
     print("   ✓ gpt-5.1-codex uses completions endpoint (v1/completions)")
     print("   ✓ Other GPT-5 models use chat completions (v1/chat/completions)")
     print("   ✓ Codex returns plain text; others use JSON mode")
-    print("   ✓ Fallback now returns JSON format for intent parsing")
