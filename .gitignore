@@ -3,6 +3,12 @@ llm_config.json
 set_env.bat
 set_env.sh
 
+# ignore tests folder
+HdlFormalVerifier/tests/
+
+# ignore AluBDDVerilog output
+HdlFormalVerifier/AluBDDVerilog/output/
+
 # ignore all local env
 *.env
 
