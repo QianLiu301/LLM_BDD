@@ -15,7 +15,7 @@ __version__ = '1.0.0'
 __author__ = 'ALU BDD Verilog Generator'
 
 # Import main classes for convenience
-from .alu_parser import ALUParser, ALUSpec, create_default_alu_spec
+from HdlFormalVerifier.tests.alu_parser import ALUParser, ALUSpec, create_default_alu_spec
 
 __all__ = [
     'ALUParser',

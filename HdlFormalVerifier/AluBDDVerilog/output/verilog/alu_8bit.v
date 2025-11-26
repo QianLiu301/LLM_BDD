@@ -1,7 +1,7 @@
 //==============================================================================
 // ALU Module: alu_8bit
 // Bitwidth: 8-bit
-// Generated: 2025-11-26 23:33:01
+// Generated: 2025-11-27 00:50:07
 // Generator: alu_generator.py (deterministic, no LLM)
 //
 // This is a synthesizable 8-bit ALU module generated from specification.

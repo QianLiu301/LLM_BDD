@@ -1,7 +1,7 @@
 //==============================================================================
 // ALU Module: alu_16bit
 // Bitwidth: 16-bit
-// Generated: 2025-11-26 23:33:01
+// Generated: 2025-11-27 00:50:07
 // Generator: alu_generator.py (deterministic, no LLM)
 //
 // This is a synthesizable 16-bit ALU module generated from specification.
@@ -47,9 +47,24 @@ module alu_16bit (
         result_full = {17'b0};
 
         case (opcode)
+            // Addition (A + B)
+            4'b0000: begin
+                result_full = a + b;
+            end
+
+            // Subtraction (A - B)
+            4'b0001: begin
+                result_full = a - b;
+            end
+
             // Bitwise AND (A & B)
             4'b0010: begin
                 result_full = {1'b0, a & b};
+            end
+
+            // Bitwise OR (A | B)
+            4'b0011: begin
+                result_full = {1'b0, a | b};
             end
 
             // Default: No operation

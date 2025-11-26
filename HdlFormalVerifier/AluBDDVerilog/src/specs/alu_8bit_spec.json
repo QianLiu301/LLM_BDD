@@ -73,31 +73,31 @@
   "test_cases": [
     {
       "operation": "ADD",
-      "a": 24,
-      "b": 2,
-      "expected": 26
+      "a": 69,
+      "b": 68,
+      "expected": 137
     },
     {
       "operation": "SUB",
-      "a": 20,
-      "b": 33,
-      "expected": 243
+      "a": 70,
+      "b": 123,
+      "expected": 203
     },
     {
       "operation": "AND",
-      "a": 27,
-      "b": 34,
-      "expected": 2
+      "a": 65,
+      "b": 72,
+      "expected": 64
     },
     {
       "operation": "OR",
-      "a": 64,
-      "b": 49,
-      "expected": 113
+      "a": 27,
+      "b": 19,
+      "expected": 27
     }
   ],
   "_generated_by": "local_template",
   "original_input": "I need a 8-bit ALU with ADD, SUB, AND, OR operations",
-  "timestamp": "2025-11-26 23:15:04",
+  "timestamp": "2025-11-27 00:48:06",
   "version": "1.0"
 }

@@ -65,7 +65,7 @@ class ALUWorkflow:
 
             # 导入Verilog生成器（如果存在）
             try:
-                from verilog_generator import VerilogGenerator
+                from HdlFormalVerifier.tests.verilog.verilog_generator import VerilogGenerator
                 self.VerilogGenerator = VerilogGenerator
             except ImportError:
                 print("⚠️  verilog_generator未找到，Verilog生成功能不可用")

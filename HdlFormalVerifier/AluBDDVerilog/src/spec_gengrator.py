@@ -469,8 +469,21 @@ CRITICAL INSTRUCTIONS:
             spec['bitwidth'] = int(bitwidth_match.group(1)) if bitwidth_match else 16
 
         # 🔧 FIX: Ensure operations field exists (handles API fallback responses)
-        if 'operations' not in spec or not spec['operations']:
-            self._debug_print("Operations missing, reconstructing from user input...", "WARN")
+        # Check if we need to rebuild operations:
+        # 1. operations field missing
+        # 2. operations field empty
+        # 3. API returned error (fallback response with incomplete operations)
+        needs_rebuild = (
+            'operations' not in spec or
+            not spec['operations'] or
+            'error' in spec  # ← 关键修复：API 失败时强制重建
+        )
+
+        if needs_rebuild:
+            if 'error' in spec:
+                self._debug_print(f"API error detected: {spec.get('error', 'unknown')}", "WARN")
+            self._debug_print("Rebuilding operations from user input...", "WARN")
+
             # Parse operations from user input
             text_lower = user_input.lower()
             operations = []
@@ -500,7 +513,12 @@ CRITICAL INSTRUCTIONS:
                         })
 
             spec['operations'] = operations
-            self._debug_print(f"Reconstructed {len(operations)} operations from user input", "SUCCESS")
+
+            # Clean up error field after recovery
+            if 'error' in spec:
+                spec['_recovered_from_error'] = spec.pop('error')
+
+            self._debug_print(f"Rebuilt {len(operations)} operations from user input", "SUCCESS")
 
         # 🔧 FIX: Ensure interface exists
         if 'interface' not in spec:

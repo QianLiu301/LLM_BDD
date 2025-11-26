@@ -73,31 +73,31 @@
   "test_cases": [
     {
       "operation": "ADD",
-      "a": 447638771,
-      "b": 485205712,
-      "expected": 932844483
+      "a": 1734626707,
+      "b": 293696494,
+      "expected": 2028323201
     },
     {
       "operation": "SUB",
-      "a": 488492436,
-      "b": 390035835,
-      "expected": 98456601
+      "a": 824234008,
+      "b": 520976683,
+      "expected": 303257325
     },
     {
       "operation": "AND",
-      "a": 894527156,
-      "b": 571459095,
-      "expected": 536954388
+      "a": 286916161,
+      "b": 131570151,
+      "expected": 17930305
     },
     {
       "operation": "OR",
-      "a": 1188272036,
-      "b": 1213629502,
-      "expected": 1322751934
+      "a": 1760108184,
+      "b": 663416681,
+      "expected": 1877737465
     }
   ],
   "_generated_by": "local_template",
   "original_input": "I need a 32-bit ALU with ADD, SUB, AND, OR operations",
-  "timestamp": "2025-11-26 23:15:17",
+  "timestamp": "2025-11-27 00:47:25",
   "version": "1.0"
 }

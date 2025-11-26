@@ -2,7 +2,7 @@
 """GPT-5.1-Codex 基础功能测试"""
 
 import os
-from llm_providers import OpenAIProvider
+from HdlFormalVerifier.tests.bdd_test.llm_providers import OpenAIProvider
 
 # 方式 1：使用环境变量
 print("=" * 70)
