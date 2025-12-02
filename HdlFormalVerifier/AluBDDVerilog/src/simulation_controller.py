@@ -1,81 +1,143 @@
 #!/usr/bin/env python3
 """
-Dynamic Simulation Controller - Using existing Verilog files
+Simulation Controller - Run Verilog simulations with iverilog/vvp
+=================================================================
 
-Supports reading .v and *_tb.v files from a given directory and running simulations.
-Version 2.0 - Enhanced with interactive VCD selection
+This module scans for ALU design files and their corresponding testbenches,
+compiles and runs simulations, and optionally opens waveform viewer.
+
+ARCHITECTURE:
+    output/verilog/
+    ├── alu_8bit.v       ──┐
+    ├── alu_8bit_tb.v    ──┼──► iverilog ──► vvp ──► output/simulation/
+    ├── alu_16bit.v      ──┤
+    ├── alu_16bit_tb.v   ──┤
+    └── ...              ──┘
+
+KEY FEATURES:
+- Automatically pairs DUT with its corresponding testbench
+- Supports multiple bitwidth ALUs (8, 16, 32, 64 bit)
+- Generates VCD waveform files for GTKWave
+- Interactive VCD file selection
+- Cross-platform path handling
+
+NO LLM REQUIRED - This is a deterministic simulation runner.
 """
 
 import subprocess
 import sys
 import argparse
+import re
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
+from datetime import datetime
 
 
 class SimulationController:
-    def __init__(self, input_dir: str, output_dir: str = None):
+    """
+    Controller for running Verilog simulations.
+
+    Scans for DUT and testbench pairs, compiles with iverilog,
+    runs with vvp, and optionally opens GTKWave for waveform viewing.
+    """
+
+    def __init__(
+            self,
+            verilog_dir: Optional[str] = None,
+            output_dir: Optional[str] = None,
+            project_root: Optional[str] = None,
+            debug: bool = True
+    ):
         """
         Initialize the simulation controller.
 
         Args:
-            input_dir: Input directory containing .v and *_tb.v files
-            output_dir: Output directory (optional). If None, a 'simulation_output'
-                        folder will be created inside the input directory.
+            verilog_dir: Directory containing .v and *_tb.v files
+            output_dir: Directory for simulation output (.vvp, .vcd files)
+            project_root: Project root directory for path resolution
+            debug: Enable debug output
         """
-        self.input_dir = Path(input_dir)
+        self.debug = debug
+        self.project_root = Path(project_root) if project_root else None
 
-        if not self.input_dir.exists():
-            raise ValueError(f"Input directory does not exist: {self.input_dir}")
+        # Setup paths
+        self.verilog_dir = self._find_verilog_dir(verilog_dir)
+        self.output_dir = self._setup_output_dir(output_dir)
 
-        # Set output directory
-        if output_dir is None:
-            self.output_dir = self.input_dir / "simulation_output"
+        print("=" * 70)
+        print("Simulation Controller")
+        print("=" * 70)
+        print(f"📁 Verilog directory: {self.verilog_dir}")
+        print(f"📁 Output directory:  {self.output_dir}")
+
+    def _find_verilog_dir(self, verilog_dir: Optional[str]) -> Path:
+        """Find Verilog source directory"""
+        # 1. Explicit specification
+        if verilog_dir:
+            path = Path(verilog_dir)
+            if path.exists():
+                return path
+            print(f"⚠️  Specified verilog_dir not found: {verilog_dir}")
+
+        # 2. Project root based
+        if self.project_root:
+            path = self.project_root / "output" / "verilog"
+            if path.exists():
+                return path
+
+        # 3. Search common locations
+        current = Path.cwd()
+        search_paths = [
+            current / "output" / "verilog",
+            current / "verilog",
+            current.parent / "output" / "verilog",
+            current / "src" / "output" / "verilog",
+        ]
+
+        for path in search_paths:
+            if path.exists():
+                self._debug_print(f"Found verilog at: {path}", "SUCCESS")
+                return path
+
+        # 4. Fallback to absolute path (Windows)
+        fallback_path = Path(r"D:\DE\HdlFormalVerifierLLM\HdlFormalVerifier\AluBDDVerilog\output\verilog")
+        if fallback_path.exists():
+            return fallback_path
+
+        # 5. Create default
+        default = current / "output" / "verilog"
+        print(f"⚠️  No verilog directory found. Please specify with --verilog-dir")
+        return default
+
+    def _setup_output_dir(self, output_dir: Optional[str]) -> Path:
+        """Setup output directory for simulation results"""
+        if output_dir:
+            path = Path(output_dir)
+        elif self.project_root:
+            path = self.project_root / "output" / "simulation"
         else:
-            self.output_dir = Path(output_dir)
+            # Same level as verilog directory
+            path = self.verilog_dir.parent / "simulation"
 
-        # Create output directory
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
-        print(f"Input directory:  {self.input_dir}")
-        print(f"Output directory: {self.output_dir}")
+    def _debug_print(self, message: str, level: str = "INFO"):
+        """Debug output"""
+        if not self.debug and level == "DEBUG":
+            return
 
-    def find_verilog_files(self) -> Tuple[List[Path], List[Path]]:
-        """
-        Scan the input directory to find Verilog files.
+        icons = {
+            "INFO": "ℹ️ ", "DEBUG": "🔍", "WARN": "⚠️ ",
+            "ERROR": "❌", "SUCCESS": "✅", "STEP": "📌",
+        }
+        icon = icons.get(level, "  ")
+        print(f"   {icon} [{level}] {message}")
 
-        Returns:
-            (design_files, testbench_files): lists of design files and testbench files
-        """
-        print(f"\nScanning directory: {self.input_dir}")
+    def check_tools(self) -> Dict[str, bool]:
+        """Check whether required tools are installed"""
+        print("\n🔧 Checking simulation tools...")
 
-        # Find all .v files
-        all_v_files = list(self.input_dir.glob("*.v"))
-
-        # Classify files
-        testbench_files: List[Path] = []
-        design_files: List[Path] = []
-
-        for v_file in all_v_files:
-            # Identify testbench files (usually contain tb, test, testbench, _tb)
-            name_lower = v_file.stem.lower()
-            if any(keyword in name_lower for keyword in ["tb", "test", "testbench", "_tb"]):
-                testbench_files.append(v_file)
-            else:
-                design_files.append(v_file)
-
-        print(f"\nFound files:")
-        print(f"  Design files ({len(design_files)}):")
-        for f in design_files:
-            print(f"    - {f.name}")
-        print(f"  Testbench files ({len(testbench_files)}):")
-        for f in testbench_files:
-            print(f"    - {f.name}")
-
-        return design_files, testbench_files
-
-    def check_tools(self) -> dict:
-        """Check whether required tools are installed."""
         tools = {
             "iverilog": False,
             "vvp": False,
@@ -94,9 +156,9 @@ class SimulationController:
                 tools["iverilog"] = True
                 version = result.stdout.split("\n")[0]
                 tools["iverilog_version"] = version
-                print(f"✓ iverilog: {version}")
+                print(f"   ✅ iverilog: {version}")
         except (FileNotFoundError, subprocess.TimeoutExpired):
-            print("✗ iverilog: not found")
+            print("   ❌ iverilog: not found")
 
         # Check vvp
         try:
@@ -108,9 +170,9 @@ class SimulationController:
             )
             if result.returncode == 0:
                 tools["vvp"] = True
-                print("✓ vvp: installed")
+                print("   ✅ vvp: installed")
         except (FileNotFoundError, subprocess.TimeoutExpired):
-            print("✗ vvp: not found")
+            print("   ❌ vvp: not found")
 
         # Check gtkwave
         try:
@@ -121,38 +183,98 @@ class SimulationController:
                 timeout=5,
             )
             tools["gtkwave"] = True
-            print("✓ gtkwave: installed")
+            print("   ✅ gtkwave: installed")
         except (FileNotFoundError, subprocess.TimeoutExpired):
-            print("✗ gtkwave: not found")
+            print("   ⚠️  gtkwave: not found (waveform viewing disabled)")
 
         return tools
 
-    def compile_verilog(self, design_files: List[Path], testbench_file: Path) -> Optional[Path]:
+    def find_dut_testbench_pairs(self) -> List[Tuple[Path, Path]]:
         """
-        Compile Verilog files.
+        Find matching DUT and testbench file pairs.
 
-        Args:
-            design_files: List of design files
-            testbench_file: Testbench file
+        Matching logic:
+            alu_8bit.v  ↔ alu_8bit_tb.v
+            alu_16bit.v ↔ alu_16bit_tb.v
+            etc.
 
         Returns:
-            Path to the compiled .vvp output file, or None if compilation failed.
+            List of (dut_file, testbench_file) tuples
         """
-        # Generate output filename based on testbench filename
-        output_sim = self.output_dir / f"{testbench_file.stem}.vvp"
+        print(f"\n🔍 Scanning for Verilog files in: {self.verilog_dir}")
 
-        # Build compile command - use -g2012 for SystemVerilog support
-        compile_cmd = ["iverilog", "-g2012", "-o", str(output_sim)]
+        if not self.verilog_dir.exists():
+            print(f"   ❌ Directory not found: {self.verilog_dir}")
+            return []
 
-        # Add design files
-        for design_file in design_files:
-            compile_cmd.append(str(design_file))
+        # Find all .v files
+        all_v_files = list(self.verilog_dir.glob("*.v"))
 
-        # Add testbench file
-        compile_cmd.append(str(testbench_file))
+        # Classify files
+        testbench_files: Dict[str, Path] = {}  # base_name -> tb_file
+        design_files: Dict[str, Path] = {}  # base_name -> dut_file
 
-        print(f"\nCompiling Verilog files...")
-        print(f"Compile command: {' '.join(compile_cmd)}")
+        for v_file in all_v_files:
+            name = v_file.stem  # filename without extension
+
+            # Check if it's a testbench file
+            if name.endswith("_tb"):
+                # Extract base name: alu_8bit_tb -> alu_8bit
+                base_name = name[:-3]
+                testbench_files[base_name] = v_file
+            elif "_tb" not in name and "test" not in name.lower():
+                # It's a design file
+                design_files[name] = v_file
+
+        # Match pairs
+        pairs: List[Tuple[Path, Path]] = []
+
+        print(f"\n📋 Found files:")
+        print(f"   Design files:    {len(design_files)}")
+        print(f"   Testbench files: {len(testbench_files)}")
+
+        print(f"\n🔗 Matching DUT ↔ Testbench pairs:")
+
+        for base_name, dut_file in sorted(design_files.items()):
+            if base_name in testbench_files:
+                tb_file = testbench_files[base_name]
+                pairs.append((dut_file, tb_file))
+                print(f"   ✅ {dut_file.name} ↔ {tb_file.name}")
+            else:
+                print(f"   ⚠️  {dut_file.name} (no matching testbench)")
+
+        # Check for orphan testbenches
+        for base_name, tb_file in testbench_files.items():
+            if base_name not in design_files:
+                print(f"   ⚠️  {tb_file.name} (no matching DUT)")
+
+        return pairs
+
+    def compile_verilog(self, dut_file: Path, tb_file: Path) -> Optional[Path]:
+        """
+        Compile a DUT + testbench pair.
+
+        Args:
+            dut_file: Path to DUT file (e.g., alu_8bit.v)
+            tb_file: Path to testbench file (e.g., alu_8bit_tb.v)
+
+        Returns:
+            Path to compiled .vvp file, or None if compilation failed
+        """
+        # Output filename based on testbench
+        output_vvp = self.output_dir / f"{tb_file.stem}.vvp"
+
+        # Build compile command
+        compile_cmd = [
+            "iverilog",
+            "-g2012",  # SystemVerilog 2012 support
+            "-o", str(output_vvp),
+            str(dut_file),  # DUT first
+            str(tb_file),  # Testbench second
+        ]
+
+        print(f"\n📦 Compiling: {dut_file.name} + {tb_file.name}")
+        self._debug_print(f"Command: {' '.join(compile_cmd)}", "DEBUG")
 
         try:
             result = subprocess.run(
@@ -163,347 +285,362 @@ class SimulationController:
             )
 
             if result.returncode == 0:
-                print(f"✓ Compilation succeeded: {output_sim.name}")
-                if result.stdout:
-                    print(f"  Compiler output: {result.stdout.strip()}")
-                return output_sim
+                print(f"   ✅ Compiled: {output_vvp.name}")
+                if result.stderr:
+                    # iverilog warnings go to stderr
+                    warnings = result.stderr.strip()
+                    if warnings:
+                        print(f"   ⚠️  Warnings:\n{warnings}")
+                return output_vvp
             else:
-                print("✗ Compilation failed")
-                print(f"  Error message:\n{result.stderr}")
+                print(f"   ❌ Compilation failed")
+                print(f"   Error:\n{result.stderr}")
                 return None
 
         except subprocess.TimeoutExpired:
-            print("✗ Compilation timeout")
+            print("   ❌ Compilation timeout")
             return None
         except FileNotFoundError:
-            print("✗ iverilog command not found. Please ensure Icarus Verilog is installed.")
+            print("   ❌ iverilog not found. Please install Icarus Verilog.")
             return None
         except Exception as e:
-            print(f"✗ Exception during compilation: {e}")
+            print(f"   ❌ Exception: {e}")
             return None
 
-    def run_simulation(self, vvp_file: Path) -> bool:
+    def run_simulation(self, vvp_file: Path) -> Tuple[bool, Optional[Path]]:
         """
-        Run the simulation.
+        Run simulation using vvp.
 
         Args:
-            vvp_file: Path to the compiled .vvp file
+            vvp_file: Path to compiled .vvp file
 
         Returns:
-            True if simulation succeeded, False otherwise.
+            (success, vcd_file_path)
         """
         if not vvp_file.exists():
-            print(f"Error: simulation file does not exist: {vvp_file}")
-            return False
+            print(f"   ❌ VVP file not found: {vvp_file}")
+            return False, None
 
-        print(f"\nRunning simulation: {vvp_file.name}")
+        print(f"\n🚀 Running simulation: {vvp_file.name}")
 
         try:
-            run_cmd = ["vvp", str(vvp_file)]
-
             result = subprocess.run(
-                run_cmd,
+                ["vvp", str(vvp_file)],
                 capture_output=True,
                 text=True,
-                timeout=30,
-                cwd=str(self.output_dir),
+                timeout=60,
+                cwd=str(self.output_dir),  # Run in output dir so VCD goes there
             )
 
             if result.returncode == 0:
-                print("✓ Simulation succeeded")
-                print("\n--- Simulation output ---")
+                print("   ✅ Simulation completed")
+                print("\n" + "─" * 60)
+                print("SIMULATION OUTPUT:")
+                print("─" * 60)
                 print(result.stdout)
-                if result.stderr:
-                    print("\n--- Warnings / stderr ---")
-                    print(result.stderr)
-                return True
+                print("─" * 60)
+
+                # Find generated VCD file
+                vcd_name = vvp_file.stem.replace("_tb", "") + "_tb.vcd"
+                vcd_file = self.output_dir / vcd_name
+
+                # Also check for alternative VCD names
+                if not vcd_file.exists():
+                    vcd_files = list(self.output_dir.glob("*.vcd"))
+                    # Get most recently modified
+                    if vcd_files:
+                        vcd_file = max(vcd_files, key=lambda f: f.stat().st_mtime)
+
+                if vcd_file.exists():
+                    print(f"\n   📊 VCD waveform: {vcd_file.name}")
+                    return True, vcd_file
+                else:
+                    print(f"\n   ⚠️  No VCD file generated")
+                    return True, None
             else:
-                print("✗ Simulation failed")
-                print(f"Error message:\n{result.stderr}")
-                return False
+                print(f"   ❌ Simulation failed")
+                print(f"   Error:\n{result.stderr}")
+                return False, None
 
         except subprocess.TimeoutExpired:
-            print("✗ Simulation timeout")
-            return False
+            print("   ❌ Simulation timeout (>60s)")
+            return False, None
         except FileNotFoundError:
-            print("✗ vvp command not found")
+            print("   ❌ vvp not found")
+            return False, None
+        except Exception as e:
+            print(f"   ❌ Exception: {e}")
+            return False, None
+
+    def open_gtkwave(self, vcd_file: Path) -> bool:
+        """Open a VCD file in GTKWave"""
+        try:
+            print(f"\n🌊 Opening waveform: {vcd_file.name}")
+            subprocess.Popen(["gtkwave", str(vcd_file)])
+            return True
+        except FileNotFoundError:
+            print("   ❌ GTKWave not found")
             return False
         except Exception as e:
-            print(f"✗ Exception during simulation: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"   ❌ Error: {e}")
             return False
 
-    def find_vcd_files(self) -> List[Path]:
-        """Find .vcd files in the output directory."""
-        vcd_files = list(self.output_dir.glob("*.vcd"))
-        return vcd_files
-
-    def open_gtkwave(self, vcd_file: Path = None, open_all: bool = False) -> bool:
+    def interactive_vcd_selection(self, vcd_files: List[Path]) -> Optional[Path]:
         """
-        Open GTKWave to view waveforms.
-
-        Args:
-            vcd_file: Path to the VCD file (optional)
-            open_all: If True, open all VCD files
-
-        Returns:
-            True if at least one GTKWave instance was opened successfully
-        """
-        vcd_files = self.find_vcd_files()
-
-        if not vcd_files:
-            print(f"Warning: no .vcd files found in {self.output_dir}")
-            return False
-
-        # If open_all is True, open all VCD files
-        if open_all:
-            print(f"\nOpening all {len(vcd_files)} VCD files in GTKWave...")
-            success_count = 0
-            for vcd in vcd_files:
-                print(f"  Opening: {vcd.name}")
-                try:
-                    subprocess.Popen(["gtkwave", str(vcd)])
-                    success_count += 1
-                except Exception as e:
-                    print(f"    Error opening {vcd.name}: {e}")
-
-            if success_count > 0:
-                print(f"\n✓ Successfully opened {success_count}/{len(vcd_files)} VCD files")
-                return True
-            else:
-                print("\n✗ Failed to open any VCD files")
-                return False
-
-        # If specific file is provided
-        if vcd_file is not None:
-            if not vcd_file.exists():
-                print(f"Warning: VCD file does not exist: {vcd_file}")
-                return False
-
-            print(f"\nOpening GTKWave: {vcd_file.name}")
-            try:
-                subprocess.Popen(["gtkwave", str(vcd_file)])
-                return True
-            except FileNotFoundError:
-                print("Error: GTKWave not found. Please ensure it is installed.")
-                return False
-            except Exception as e:
-                print(f"Exception while starting GTKWave: {e}")
-                return False
-
-        # Interactive selection
-        return self._interactive_vcd_selection(vcd_files)
-
-    def _interactive_vcd_selection(self, vcd_files: List[Path]) -> bool:
-        """
-        Allow user to interactively select which VCD files to open.
+        Interactive VCD file selection menu.
 
         Args:
             vcd_files: List of available VCD files
 
         Returns:
-            True if at least one file was opened successfully
+            Selected VCD file path, or None if cancelled
         """
+        if not vcd_files:
+            print("\n⚠️  No VCD files available")
+            return None
+
         print("\n" + "=" * 60)
-        print("Available VCD files:")
+        print("📊 Available VCD Waveform Files:")
         print("=" * 60)
 
         for i, vcd in enumerate(vcd_files, 1):
-            print(f"  {i}. {vcd.name}")
+            size_kb = vcd.stat().st_size / 1024
+            print(f"  {i}. {vcd.name} ({size_kb:.1f} KB)")
 
         print(f"  A. Open ALL files")
-        print(f"  0. Cancel")
+        print(f"  0. Skip / Cancel")
         print("=" * 60)
 
         try:
-            choice = input("\nSelect file(s) to open (number/A/0) [default: 1]: ").strip().upper()
+            choice = input("\nSelect file to open [1]: ").strip().upper()
 
             if not choice:
                 choice = "1"
 
-            # Cancel
             if choice == "0":
-                print("Cancelled.")
-                return False
+                print("   Skipped.")
+                return None
 
-            # Open all
             if choice == "A":
-                return self.open_gtkwave(open_all=True)
+                for vcd in vcd_files:
+                    self.open_gtkwave(vcd)
+                return vcd_files[0] if vcd_files else None
 
-            # Open specific file
             try:
                 index = int(choice) - 1
                 if 0 <= index < len(vcd_files):
-                    selected_vcd = vcd_files[index]
-                    print(f"\nOpening: {selected_vcd.name}")
-                    try:
-                        subprocess.Popen(["gtkwave", str(selected_vcd)])
-                        return True
-                    except Exception as e:
-                        print(f"Error opening GTKWave: {e}")
-                        return False
+                    selected = vcd_files[index]
+                    self.open_gtkwave(selected)
+                    return selected
                 else:
-                    print(f"Invalid selection: {choice}")
-                    return False
+                    print(f"   Invalid selection: {choice}")
+                    return None
             except ValueError:
-                print(f"Invalid input: {choice}")
-                return False
+                print(f"   Invalid input: {choice}")
+                return None
 
         except KeyboardInterrupt:
-            print("\nCancelled by user.")
-            return False
-        except Exception as e:
-            print(f"Error during selection: {e}")
-            return False
+            print("\n   Cancelled.")
+            return None
 
-    def run_full_simulation(self, auto_open_wave: str = "prompt") -> bool:
+    def run_all_simulations(self, auto_wave: str = "prompt") -> bool:
         """
-        Run the complete simulation flow.
+        Run complete simulation flow for all DUT/testbench pairs.
 
         Args:
-            auto_open_wave: How to handle opening waveforms
+            auto_wave: How to handle waveform viewing
                 - "no": Don't open GTKWave
-                - "prompt": Prompt user to select (default)
-                - "all": Automatically open all VCD files
-                - "first": Automatically open the first VCD file
+                - "prompt": Ask user which to open
+                - "all": Open all VCD files
+                - "first": Open first VCD file only
 
         Returns:
-            True if at least one testbench simulation succeeded
+            True if at least one simulation succeeded
         """
-        print("\n" + "=" * 60)
-        print("Starting simulation flow")
-        print("=" * 60)
+        print("\n" + "=" * 70)
+        print("🔬 SIMULATION FLOW")
+        print("=" * 70)
 
         # 1. Check tools
-        print("\n1. Checking tools")
         tools = self.check_tools()
 
-        if not tools["iverilog"]:
-            print("\nError: iverilog is not installed, cannot continue.")
+        if not tools["iverilog"] or not tools["vvp"]:
+            print("\n❌ Required tools not installed. Please install Icarus Verilog.")
+            print("   Windows: Download from http://bleyer.org/icarus/")
+            print("   Linux:   sudo apt install iverilog")
+            print("   macOS:   brew install icarus-verilog")
             return False
 
-        # 2. Find Verilog files
-        print("\n2. Searching for Verilog files")
-        design_files, testbench_files = self.find_verilog_files()
+        # 2. Find DUT + testbench pairs
+        pairs = self.find_dut_testbench_pairs()
 
-        if not design_files:
-            print("\nError: no design files found")
+        if not pairs:
+            print("\n❌ No matching DUT/testbench pairs found")
             return False
 
-        if not testbench_files:
-            print("\nError: no testbench files found")
-            return False
+        # 3. Compile and simulate each pair
+        results = []
+        vcd_files = []
 
-        # 3. Compile and run each testbench
-        success_count = 0
-        for tb_file in testbench_files:
-            print(f"\n3. Compiling testbench: {tb_file.name}")
-            vvp_file = self.compile_verilog(design_files, tb_file)
+        for i, (dut_file, tb_file) in enumerate(pairs, 1):
+            print(f"\n{'─' * 70}")
+            print(f"📋 Test {i}/{len(pairs)}: {dut_file.stem}")
+            print(f"{'─' * 70}")
 
+            # Compile
+            vvp_file = self.compile_verilog(dut_file, tb_file)
             if vvp_file is None:
-                print(f"  Skipping simulation for {tb_file.name} (compilation failed)")
+                results.append((dut_file.stem, False, "Compilation failed"))
                 continue
 
-            print(f"\n4. Running simulation: {tb_file.name}")
-            if self.run_simulation(vvp_file):
-                success_count += 1
+            # Simulate
+            success, vcd_file = self.run_simulation(vvp_file)
+
+            if success:
+                results.append((dut_file.stem, True, "PASS"))
+                if vcd_file:
+                    vcd_files.append(vcd_file)
+            else:
+                results.append((dut_file.stem, False, "Simulation failed"))
 
         # 4. Summary
-        print("\n" + "=" * 60)
-        print(f"Simulation finished: {success_count}/{len(testbench_files)} tests succeeded")
-        print("=" * 60)
+        print("\n" + "=" * 70)
+        print("📊 SIMULATION SUMMARY")
+        print("=" * 70)
 
-        # Show generated files
-        print(f"\nOutput directory: {self.output_dir}")
-        print("\nGenerated files:")
+        passed = sum(1 for _, success, _ in results if success)
+        failed = len(results) - passed
+
+        print(f"\n   Total:  {len(results)}")
+        print(f"   Passed: {passed} ✅")
+        print(f"   Failed: {failed} {'❌' if failed > 0 else ''}")
+
+        print(f"\n   Results:")
+        for name, success, msg in results:
+            icon = "✅" if success else "❌"
+            print(f"      {icon} {name}: {msg}")
+
+        # 5. Output files
+        print(f"\n📁 Output directory: {self.output_dir}")
+
         vvp_files = list(self.output_dir.glob("*.vvp"))
-        vcd_files = self.find_vcd_files()
+        all_vcd_files = list(self.output_dir.glob("*.vcd"))
 
         if vvp_files:
-            print("  VVP files:")
+            print(f"\n   Compiled simulations (.vvp):")
             for f in vvp_files:
-                print(f"    - {f.name}")
+                print(f"      • {f.name}")
 
-        if vcd_files:
-            print("  VCD files:")
-            for f in vcd_files:
-                print(f"    - {f.name}")
+        if all_vcd_files:
+            print(f"\n   Waveform files (.vcd):")
+            for f in all_vcd_files:
+                size_kb = f.stat().st_size / 1024
+                print(f"      • {f.name} ({size_kb:.1f} KB)")
 
-        # Auto-open waveform viewer
-        if success_count > 0 and tools.get("gtkwave"):
-            # Normalize auto_open_wave parameter
-            if auto_open_wave is True:
-                auto_open_wave = "all"
-            elif auto_open_wave is False:
-                auto_open_wave = "no"
-            elif auto_open_wave is None:
-                auto_open_wave = "prompt"
+        # 6. Waveform viewing
+        if passed > 0 and tools.get("gtkwave") and all_vcd_files:
+            if auto_wave == "all":
+                print("\n🌊 Opening all waveforms...")
+                for vcd in all_vcd_files:
+                    self.open_gtkwave(vcd)
+            elif auto_wave == "first":
+                self.open_gtkwave(all_vcd_files[0])
+            elif auto_wave == "prompt":
+                self.interactive_vcd_selection(all_vcd_files)
+            # else: "no" - don't open
 
-            auto_open_wave = str(auto_open_wave).lower()
+        print("\n" + "=" * 70)
+        if passed == len(results):
+            print("✨ All simulations completed successfully!")
+        elif passed > 0:
+            print(f"⚠️  {passed}/{len(results)} simulations passed")
+        else:
+            print("❌ All simulations failed")
+        print("=" * 70)
 
-            if auto_open_wave == "all":
-                print("\nAuto-opening all VCD files...")
-                self.open_gtkwave(open_all=True)
-            elif auto_open_wave == "first":
-                print("\nAuto-opening first VCD file...")
-                first_vcd = vcd_files[0] if vcd_files else None
-                if first_vcd:
-                    self.open_gtkwave(vcd_file=first_vcd)
-            elif auto_open_wave == "prompt":
-                # Interactive selection
-                self.open_gtkwave()
-            # else: "no" - don't open anything
-
-        return success_count > 0
+        return passed > 0
 
 
 def main():
-    """Main entry point."""
-    print("Dynamic Simulation Controller - using existing Verilog files")
-    print("=" * 60)
-
-    # Parse command line arguments
+    """Main entry point"""
     parser = argparse.ArgumentParser(
-        description='Dynamic Verilog Simulation Controller',
+        description='Verilog Simulation Controller - Compile and run ALU testbenches',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  # Interactive mode (prompt for VCD selection)
+  # Run with default paths
   python simulation_controller.py
 
-  # Auto-open all VCD files
+  # Specify directories
+  python simulation_controller.py --verilog-dir ./output/verilog --output-dir ./output/simulation
+
+  # Auto-open all waveforms
   python simulation_controller.py --open-wave all
 
-  # Don't open any waveforms
+  # Don't open waveforms
   python simulation_controller.py --open-wave no
 
-  # Specify input directory
-  python simulation_controller.py -i ./verilog -o ./sim_output
+  # With project root
+  python simulation_controller.py --project-root D:/DE/HdlFormalVerifierLLM/HdlFormalVerifier/AluBDDVerilog
+
+Directory Structure:
+  output/
+  ├── verilog/              ← Input: DUT + Testbench files
+  │   ├── alu_8bit.v
+  │   ├── alu_8bit_tb.v
+  │   ├── alu_16bit.v
+  │   └── alu_16bit_tb.v
+  └── simulation/           ← Output: Compiled + Waveform files
+      ├── alu_8bit_tb.vvp
+      ├── alu_8bit_tb.vcd
+      ├── alu_16bit_tb.vvp
+      └── alu_16bit_tb.vcd
+
+Required Tools:
+  - iverilog (Icarus Verilog compiler)
+  - vvp (Verilog simulation runtime)
+  - gtkwave (optional, for waveform viewing)
         '''
     )
 
+    # Default path for your project
+    default_verilog = r"D:\DE\HdlFormalVerifierLLM\HdlFormalVerifier\AluBDDVerilog\output\verilog"
+    default_output = r"D:\DE\HdlFormalVerifierLLM\HdlFormalVerifier\AluBDDVerilog\output\simulation"
+
     parser.add_argument(
-        '-i', '--input-dir',
-        help='Input directory containing Verilog files',
-        default=r"D:\DE\HdlFormalVerifierLLM\HdlFormalVerifier\AluBDDVerilog\src\output\verilog"
+        '--verilog-dir', '-v',
+        help='Directory containing Verilog files (DUT + testbench)',
+        default=default_verilog
     )
 
     parser.add_argument(
-        '-o', '--output-dir',
-        help='Output directory for simulation results (default: input_dir/simulation_output)',
+        '--output-dir', '-o',
+        help='Output directory for simulation results',
+        default=default_output
+    )
+
+    parser.add_argument(
+        '--project-root', '-p',
+        help='Project root directory',
         default=None
     )
 
     parser.add_argument(
-        '--open-wave',
+        '--open-wave', '-w',
         choices=['no', 'prompt', 'all', 'first'],
         default='prompt',
-        help='''How to handle opening waveforms:
-             no: Don't open GTKWave
-             prompt: Prompt user to select (default)
-             all: Open all VCD files
-             first: Open first VCD file'''
+        help='''Waveform viewing mode:
+            no: Don't open GTKWave
+            prompt: Ask which file to open (default)
+            all: Open all VCD files
+            first: Open first VCD file only'''
+    )
+
+    parser.add_argument(
+        '--debug',
+        action='store_true',
+        default=True,
+        help='Enable debug output'
     )
 
     args = parser.parse_args()
@@ -511,21 +648,22 @@ Examples:
     try:
         # Create controller
         controller = SimulationController(
-            input_dir=args.input_dir,
+            verilog_dir=args.verilog_dir,
             output_dir=args.output_dir,
+            project_root=args.project_root,
+            debug=args.debug
         )
 
-        # Run simulation
-        success = controller.run_full_simulation(auto_open_wave=args.open_wave)
+        # Run all simulations
+        success = controller.run_all_simulations(auto_wave=args.open_wave)
 
-        if success:
-            print("\n✓ Simulation flow completed successfully!")
-        else:
-            print("\n✗ Simulation flow failed")
-            sys.exit(1)
+        sys.exit(0 if success else 1)
 
+    except KeyboardInterrupt:
+        print("\n\n⚠️  Interrupted by user")
+        sys.exit(130)
     except Exception as e:
-        print(f"\n✗ Error occurred: {e}")
+        print(f"\n❌ Error: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
