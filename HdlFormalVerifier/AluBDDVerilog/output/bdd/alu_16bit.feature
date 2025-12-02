@@ -1,6 +1,6 @@
 # Auto-generated BDD Feature File
 # Generated from: alu_16bit
-# Timestamp: 2025-11-27 00:48:32
+# Timestamp: 2025-12-01 21:46:26
 # Generator: bdd_generator.py (deterministic, no LLM)
 
 Feature: 16-bit ALU Verification

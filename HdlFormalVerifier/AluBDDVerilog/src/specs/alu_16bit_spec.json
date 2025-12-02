@@ -1,7 +1,17 @@
 {
-  "module_name": "alu_16bit",
+  "operation": "ADD",
+  "condition": "random",
+  "scenario_name": "ADD with random",
+  "num_examples": 3,
+  "tags": [
+    "arithmetic"
+  ],
+  "_fallback": true,
+  "_fallback_reason": "API call failed, using local parsing",
+  "original_input": "I need a 16-bit ALU with ADD, SUB, AND, OR operations",
+  "timestamp": "2025-12-01 21:45:07",
+  "version": "1.0",
   "bitwidth": 16,
-  "description": "16-bit Arithmetic Logic Unit",
   "operations": [
     {
       "name": "ADD",
@@ -70,34 +80,31 @@
       }
     ]
   },
+  "module_name": "alu_16bit",
   "test_cases": [
     {
       "operation": "ADD",
-      "a": 8334,
-      "b": 5735,
-      "expected": 14069
+      "a": 12908,
+      "b": 31481,
+      "expected": 44389
     },
     {
       "operation": "SUB",
-      "a": 19317,
-      "b": 6574,
-      "expected": 12743
+      "a": 12796,
+      "b": 367,
+      "expected": 12429
     },
     {
       "operation": "AND",
-      "a": 2804,
-      "b": 3106,
-      "expected": 2080
+      "a": 25294,
+      "b": 16264,
+      "expected": 8840
     },
     {
       "operation": "OR",
-      "a": 12582,
-      "b": 27547,
-      "expected": 31679
+      "a": 32752,
+      "b": 10516,
+      "expected": 32756
     }
-  ],
-  "_generated_by": "local_template",
-  "original_input": "I need a 16-bit ALU with ADD, SUB, AND, OR operations",
-  "timestamp": "2025-11-27 00:46:33",
-  "version": "1.0"
+  ]
 }
