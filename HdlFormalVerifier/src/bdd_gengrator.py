@@ -32,14 +32,13 @@ This ensures:
 3. Traceability (BDD directly maps to spec)
 """
 
-import os
-import re
+import argparse
 import json
 import random
-import argparse
+import re
+from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional, Union
-from datetime import datetime
 
 
 class BDDGenerator:
@@ -55,7 +54,7 @@ class BDDGenerator:
         "ADD": {"opcode": "0000", "description": "Addition (A + B)"},
         "SUB": {"opcode": "0001", "description": "Subtraction (A - B)"},
         "AND": {"opcode": "0010", "description": "Bitwise AND (A & B)"},
-        "OR":  {"opcode": "0011", "description": "Bitwise OR (A | B)"},
+        "OR": {"opcode": "0011", "description": "Bitwise OR (A | B)"},
         "XOR": {"opcode": "0100", "description": "Bitwise XOR (A ^ B)"},
         "NOT": {"opcode": "0101", "description": "Bitwise NOT (~A)"},
         "SHL": {"opcode": "0110", "description": "Shift Left (A << B)"},
@@ -63,11 +62,11 @@ class BDDGenerator:
     }
 
     def __init__(
-        self,
-        spec_dir: Optional[str] = None,
-        output_dir: Optional[str] = None,
-        project_root: Optional[str] = None,
-        debug: bool = True
+            self,
+            spec_dir: Optional[str] = None,
+            output_dir: Optional[str] = None,
+            project_root: Optional[str] = None,
+            debug: bool = True
     ):
         """
         Initialize BDD generator.
@@ -118,8 +117,6 @@ class BDDGenerator:
             current / "specs",
             current.parent / "src" / "specs",
             current.parent / "specs",
-            current / "AluBDDVerilog" / "src" / "specs",
-            current.parent / "AluBDDVerilog" / "src" / "specs",
         ]
 
         for path in search_paths:
@@ -128,12 +125,13 @@ class BDDGenerator:
                 return path
 
         # 4. Fallback to absolute path (Windows specific)
-        fallback_path = Path(r"D:\DE\HdlFormalVerifierLLM\HdlFormalVerifier\AluBDDVerilog\src\specs")
+        fallback_path = Path(
+            r"/\specs")  # Adjusted fallback path
         if fallback_path.exists():
             self._debug_print(f"Using fallback path: {fallback_path}", "INFO")
             return fallback_path
 
-        # 5. Create default location
+        # 5. Create default location if not found
         default = current / "specs"
         default.mkdir(parents=True, exist_ok=True)
         print(f"⚠️  No existing specs directory found, created: {default}")
@@ -144,11 +142,11 @@ class BDDGenerator:
         if output_dir:
             path = Path(output_dir)
         elif self.project_root:
-            path = self.project_root / "output" / "bdd"
+            # Adjusted to set the output directory relative to AluBDDVerilog
+            path = self.project_root / "HdlFormalVerifier" / "output" / "bdd"
         else:
-            # Put output next to specs directory
-            path = self.spec_dir.parent.parent / "output" / "bdd"
-
+            # Adjusted to set the output directory relative to AluBDDVerilog
+            path = self.spec_dir.parent/ "output" / "bdd"
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -317,12 +315,12 @@ Feature: {bitwidth}-bit ALU Verification
         return feature
 
     def _generate_scenario(
-        self,
-        op_name: str,
-        op_desc: str,
-        opcode: str,
-        bitwidth: int,
-        num_examples: int
+            self,
+            op_name: str,
+            op_desc: str,
+            opcode: str,
+            bitwidth: int,
+            num_examples: int
     ) -> str:
         """Generate a single scenario with Examples table"""
 
@@ -350,10 +348,10 @@ Feature: {bitwidth}-bit ALU Verification
         return scenario
 
     def _generate_test_examples(
-        self,
-        op_name: str,
-        bitwidth: int,
-        num_examples: int
+            self,
+            op_name: str,
+            bitwidth: int,
+            num_examples: int
     ) -> List[Dict]:
         """Generate deterministic test examples for an operation"""
 
@@ -407,11 +405,11 @@ Feature: {bitwidth}-bit ALU Verification
         return examples
 
     def _calculate_result(
-        self,
-        op_name: str,
-        a: int,
-        b: int,
-        bitwidth: int
+            self,
+            op_name: str,
+            a: int,
+            b: int,
+            bitwidth: int
     ) -> tuple:
         """Calculate ALU operation result and overflow flag"""
 
@@ -551,7 +549,7 @@ Examples:
   python bdd_generator.py --examples 10
 
   # With project root
-  python bdd_generator.py --project-root D:/DE/HdlFormalVerifierLLM/HdlFormalVerifier/AluBDDVerilog
+  python bdd_generator.py --project-root D:/DE/HdlFormalVerifierLLM/HdlFormalVerifier
 
 Note: This generator does NOT use LLM. It performs deterministic
 transformation from spec to BDD scenarios.

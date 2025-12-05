@@ -9,7 +9,7 @@
   "_fallback": true,
   "_fallback_reason": "API call failed, using local parsing",
   "original_input": "I need a 16-bit ALU with ADD, SUB, AND, OR operations",
-  "timestamp": "2025-12-01 21:45:07",
+  "timestamp": "2025-12-05 18:23:23",
   "version": "1.0",
   "bitwidth": 16,
   "operations": [
@@ -84,27 +84,27 @@
   "test_cases": [
     {
       "operation": "ADD",
-      "a": 12908,
-      "b": 31481,
-      "expected": 44389
+      "a": 22394,
+      "b": 4891,
+      "expected": 27285
     },
     {
       "operation": "SUB",
-      "a": 12796,
-      "b": 367,
-      "expected": 12429
+      "a": 21666,
+      "b": 11430,
+      "expected": 10236
     },
     {
       "operation": "AND",
-      "a": 25294,
-      "b": 16264,
-      "expected": 8840
+      "a": 7681,
+      "b": 17683,
+      "expected": 1025
     },
     {
       "operation": "OR",
-      "a": 32752,
-      "b": 10516,
-      "expected": 32756
+      "a": 31241,
+      "b": 6252,
+      "expected": 31341
     }
   ]
 }

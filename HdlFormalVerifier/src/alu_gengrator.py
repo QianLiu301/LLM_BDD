@@ -150,8 +150,6 @@ class ALUGenerator:
             current / "specs",
             current.parent / "src" / "specs",
             current.parent / "specs",
-            current / "AluBDDVerilog" / "src" / "specs",
-            current.parent / "AluBDDVerilog" / "src" / "specs",
         ]
 
         for path in search_paths:
@@ -160,7 +158,7 @@ class ALUGenerator:
                 return path
 
         # 4. Fallback to absolute path (Windows specific)
-        fallback_path = Path(r"D:\DE\HdlFormalVerifierLLM\HdlFormalVerifier\AluBDDVerilog\src\specs")
+        fallback_path = Path(r"D:\DE\HdlFormalVerifierLLM\HdlFormalVerifier\specs")
         if fallback_path.exists():
             self._debug_print(f"Using fallback path: {fallback_path}", "INFO")
             return fallback_path
@@ -179,7 +177,7 @@ class ALUGenerator:
             path = self.project_root / "output" / "verilog"
         else:
             # Put output next to specs directory (output/verilog, same level as output/bdd)
-            path = self.spec_dir.parent.parent / "output" / "verilog"
+            path = self.spec_dir.parent / "output" / "verilog"
 
         path.mkdir(parents=True, exist_ok=True)
         return path
@@ -562,7 +560,7 @@ Examples:
   python alu_generator.py --output-dir ./output/verilog
 
   # With project root
-  python alu_generator.py --project-root D:/DE/HdlFormalVerifierLLM/HdlFormalVerifier/AluBDDVerilog
+  python alu_generator.py --project-root D:/DE/HdlFormalVerifierLLM/HdlFormalVerifier
 
 Note: This generator does NOT use LLM. It performs deterministic
 transformation from spec to synthesizable Verilog code.

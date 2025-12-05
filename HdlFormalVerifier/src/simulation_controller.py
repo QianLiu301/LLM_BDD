@@ -100,7 +100,7 @@ class SimulationController:
                 return path
 
         # 4. Fallback to absolute path (Windows)
-        fallback_path = Path(r"D:\DE\HdlFormalVerifierLLM\HdlFormalVerifier\AluBDDVerilog\output\verilog")
+        fallback_path = Path(r"D:\DE\RQ\MultiLLM_BDD_Comparison\HdlFormalVerifier\output\verilog")
         if fallback_path.exists():
             return fallback_path
 
@@ -604,8 +604,8 @@ Required Tools:
     )
 
     # Default path for your project
-    default_verilog = r"D:\DE\HdlFormalVerifierLLM\HdlFormalVerifier\AluBDDVerilog\output\verilog"
-    default_output = r"D:\DE\HdlFormalVerifierLLM\HdlFormalVerifier\AluBDDVerilog\output\simulation"
+    default_verilog = r"D:\DE\RQ\MultiLLM_BDD_Comparison\HdlFormalVerifier\output\verilog"
+    default_output = r"D:\DE\RQ\MultiLLM_BDD_Comparison\HdlFormalVerifier\output\simulation"
 
     parser.add_argument(
         '--verilog-dir', '-v',

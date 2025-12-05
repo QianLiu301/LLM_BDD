@@ -1,7 +1,7 @@
 //==============================================================================
 // ALU Module: alu_16bit
 // Bitwidth: 16-bit
-// Generated: 2025-12-01 21:46:13
+// Generated: 2025-12-05 19:47:10
 // Generator: alu_generator.py (deterministic, no LLM)
 //
 // This is a synthesizable 16-bit ALU module generated from specification.

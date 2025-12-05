@@ -1,15 +1,15 @@
 # Auto-generated BDD Feature File
-# Generated from: alu_16bit
-# Timestamp: 2025-12-01 21:46:26
+# Generated from: alu_32bit
+# Timestamp: 2025-12-05 19:44:47
 # Generator: bdd_generator.py (deterministic, no LLM)
 
-Feature: 16-bit ALU Verification
+Feature: 32-bit ALU Verification
   As a hardware verification engineer
-  I want to verify the 16-bit ALU implementation
+  I want to verify the 32-bit ALU implementation
   So that I can ensure it correctly performs all arithmetic and logical operations
 
   Background:
-    Given the ALU is initialized with 16-bit operands
+    Given the ALU is initialized with 32-bit operands
 
   @add @arithmetic
   Scenario Outline: Verify ADD operation
@@ -27,8 +27,8 @@ Feature: 16-bit ALU Verification
       | 10    | 5     | 0000   | 15              | False     | False    | False         |
       | 118   | 118   | 0000   | 236             | False     | False    | False         |
       | 92    | 0     | 0000   | 92              | False     | False    | False         |
-      | 21338 | 27547 | 0000   | 48885           | False     | False    | True          |
-      | 240   | 18533 | 0000   | 18773           | False     | False    | False         |
+      | 1398439431 | 1805366006 | 0000   | 3203805437      | False     | False    | True          |
+      | 15785585 | 1214608580 | 0000   | 1230394165      | False     | False    | False         |
 
   @sub @arithmetic
   Scenario Outline: Verify SUB operation
@@ -46,8 +46,8 @@ Feature: 16-bit ALU Verification
       | 10    | 5     | 0001   | 5               | False     | False    | False         |
       | 400   | 400   | 0001   | 0               | True      | False    | False         |
       | 34    | 0     | 0001   | 34              | False     | False    | False         |
-      | 3773  | 26952 | 0001   | 42357           | False     | True     | True          |
-      | 31490 | 15021 | 0001   | 16469           | False     | False    | False         |
+      | 247269718 | 1766346966 | 0001   | 2775890048      | False     | True     | True          |
+      | 2063751945 | 984423246 | 0001   | 1079328699      | False     | False    | False         |
 
   @and @arithmetic
   Scenario Outline: Verify AND operation
@@ -65,8 +65,8 @@ Feature: 16-bit ALU Verification
       | 10    | 5     | 0010   | 0               | True      | False    | False         |
       | 628   | 628   | 0010   | 628             | False     | False    | False         |
       | 46    | 0     | 0010   | 0               | True      | False    | False         |
-      | 15865 | 1376  | 0010   | 1376            | False     | False    | False         |
-      | 20554 | 22473 | 0010   | 20552           | False     | False    | False         |
+      | 1039783140 | 90182474 | 0010   | 90181696        | False     | False    | False         |
+      | 1347050235 | 1472843118 | 0010   | 1346914410      | False     | False    | False         |
 
   @or @arithmetic
   Scenario Outline: Verify OR operation
@@ -84,6 +84,6 @@ Feature: 16-bit ALU Verification
       | 10    | 5     | 0011   | 15              | False     | False    | False         |
       | 580   | 580   | 0011   | 580             | False     | False    | False         |
       | 27    | 0     | 0011   | 27              | False     | False    | False         |
-      | 11011 | 15044 | 0011   | 15303           | False     | False    | False         |
-      | 31452 | 2244  | 0011   | 31452           | False     | False    | False         |
+      | 721662266 | 985956352 | 0011   | 1002942778      | False     | False    | False         |
+      | 2061291246 | 147068871 | 0011   | 2061295599      | False     | False    | False         |
 

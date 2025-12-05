@@ -313,7 +313,7 @@ class TestbenchGenerator:
                 return path
 
         # 4. Fallback to absolute path
-        fallback_path = Path(r"D:\DE\HdlFormalVerifierLLM\HdlFormalVerifier\AluBDDVerilog\output\bdd")
+        fallback_path = Path(r"D:\DE\RQ\MultiLLM_BDD_Comparison\HdlFormalVerifier\output\verilog")
         if fallback_path.exists():
             return fallback_path
 

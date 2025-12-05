@@ -1,6 +1,6 @@
 //==============================================================================
 // Testbench: alu_16bit
-// Generated: 2025-11-27 00:50:58
+// Generated: 2025-12-05 19:51:16
 // Generator: testbench_generator.py (deterministic, no LLM)
 //
 // DUT Module: alu_16bit

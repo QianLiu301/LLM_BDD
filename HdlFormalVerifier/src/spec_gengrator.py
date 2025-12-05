@@ -103,17 +103,17 @@ class SpecGenerator:
         if output_dir:
             self.output_dir = Path(output_dir)
         elif project_root:
-            self.output_dir = Path(project_root) / "src" / "specs"
+            self.output_dir = Path(project_root) / "specs"
         else:
             # Try to find specs directory dynamically
             current = Path.cwd()
 
             # Check common locations
             possible_paths = [
-                current / "src" / "specs",
                 current / "specs",
-                current.parent / "src" / "specs",
+                current / "src" / "specs",
                 current.parent / "specs",
+                current.parent / "src" / "specs",
             ]
 
             for path in possible_paths:
