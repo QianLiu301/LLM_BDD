@@ -4,7 +4,8 @@ Gherkin BDD generator enhanced with LLM-generated descriptions.
 """
 
 from typing import Optional
-from HdlFormalVerifier.tests.llm_providers_v2 import LLMProvider, LocalLLMProvider
+
+from llm_providers import LLMProvider, LocalLLMProvider
 
 
 class GherkinGenerator:

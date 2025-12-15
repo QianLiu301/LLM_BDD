@@ -1,35 +1,37 @@
 """
-BDD Generator - Generate BDD .feature files from specification
-===============================================================
+Multi-LLM BDD Generator - Generate BDD .feature files for multiple LLMs
+========================================================================
 
-This module reads spec files (JSON/TXT) and generates BDD .feature files.
-NO LLM is used - this is a deterministic transformation.
+This module reads spec files from different LLM providers and generates
+corresponding BDD .feature files. NO LLM is used - deterministic transformation.
+
+NEW FEATURES:
+- ✅ Support multiple LLM directories (specs/gemini/, specs/groq/, etc.)
+- ✅ Skip failed specs (api_call_failed: true)
+- ✅ Generate to LLM-specific output directories (output/bdd/gemini/, etc.)
+- ✅ Preserve relative paths (no hardcoded absolute paths)
+- ✅ Batch processing for all LLMs
+- ✅ Summary report of successful/failed/skipped
+
+DIRECTORY STRUCTURE:
+    specs/
+    ├── gemini/
+    │   ├── spec_success.json → output/bdd/gemini/xxx.feature
+    │   └── spec_failed.json  → SKIPPED (api_call_failed)
+    ├── groq/
+    └── deepseek/
 
 ARCHITECTURE:
-    spec.txt / spec.json  (from spec_generator.py)
+    spec.json (from spec_generator.py)
            │
            ▼
     ┌──────────────────┐
-    │   bdd_generator  │  ◄── NO LLM (deterministic)
-    │    (this file)   │
+    │ bdd_generator_v2 │  ◄── NO LLM (deterministic)
+    │    (this file)   │      Skips failed specs
     └────────┬─────────┘
              │
              ▼
         .feature files
-             │
-             ▼
-      verilog_generator.py → testbench.v
-
-PURPOSE:
-- Read specification from specs directory
-- Generate BDD scenarios for each operation
-- Create parameterized Examples tables with test data
-- Output .feature files in Gherkin format
-
-This ensures:
-1. Deterministic output (same spec → same BDD)
-2. Independence from LLM (no API calls needed)
-3. Traceability (BDD directly maps to spec)
 """
 
 import argparse
@@ -38,15 +40,15 @@ import random
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional, Tuple
 
 
-class BDDGenerator:
+class MultiLLMBDDGenerator:
     """
-    Generate BDD .feature files from specification.
+    Generate BDD .feature files for multiple LLM providers.
 
     This is a deterministic generator - NO LLM is used.
-    Same input spec always produces the same output.
+    Automatically skips failed specs.
     """
 
     # Standard ALU operations (fallback if not in spec)
@@ -62,204 +64,208 @@ class BDDGenerator:
     }
 
     def __init__(
-            self,
-            spec_dir: Optional[str] = None,
-            output_dir: Optional[str] = None,
-            project_root: Optional[str] = None,
-            debug: bool = True
+        self,
+        specs_base_dir: Optional[str] = None,
+        output_base_dir: Optional[str] = None,
+        project_root: Optional[str] = None,
+        debug: bool = True
     ):
         """
-        Initialize BDD generator.
+        Initialize Multi-LLM BDD generator.
 
         Args:
-            spec_dir: Directory containing spec files
-            output_dir: Directory to save .feature files
+            specs_base_dir: Base directory containing LLM subdirectories (e.g., "specs/")
+            output_base_dir: Base output directory (e.g., "output/bdd/")
             project_root: Project root directory
             debug: Enable debug output
         """
         self.debug = debug
-        self.project_root = Path(project_root) if project_root else None
 
         # Setup paths
-        self.spec_dir = self._find_spec_dir(spec_dir)
-        self.output_dir = self._setup_output_dir(output_dir)
+        self.specs_base_dir = self._find_specs_base_dir(specs_base_dir, project_root)
+        self.output_base_dir = self._setup_output_base_dir(output_base_dir, project_root)
 
-        print(f"📁 Spec directory: {self.spec_dir}")
-        print(f"📁 Output directory: {self.output_dir}")
+        print(f"📁 Specs base directory: {self.specs_base_dir}")
+        print(f"📁 Output base directory: {self.output_base_dir}")
 
-    def _find_spec_dir(self, spec_dir: Optional[str]) -> Path:
-        """
-        Find specs directory dynamically.
+    def _find_specs_base_dir(self, specs_dir: Optional[str], project_root: Optional[str]) -> Path:
+        """Find specs base directory"""
+        if specs_dir:
+            return Path(specs_dir)
 
-        Priority:
-        1. Explicitly specified spec_dir
-        2. project_root/src/specs
-        3. Search common locations
-        4. Fallback to absolute path
-        """
-        # 1. Explicit specification
-        if spec_dir:
-            path = Path(spec_dir)
-            if path.exists():
-                return path
-            print(f"⚠️  Specified spec_dir not found: {spec_dir}")
-
-        # 2. Project root based
-        if self.project_root:
-            path = self.project_root / "src" / "specs"
-            if path.exists():
-                return path
-
-        # 3. Search common locations
+        # Try common locations
         current = Path.cwd()
-        search_paths = [
-            current / "src" / "specs",
+        possible_paths = [
             current / "specs",
-            current.parent / "src" / "specs",
+            current / "src" / "specs",
             current.parent / "specs",
         ]
 
-        for path in search_paths:
-            if path.exists():
-                self._debug_print(f"Found specs at: {path}", "SUCCESS")
+        if project_root:
+            possible_paths.insert(0, Path(project_root) / "specs")
+
+        for path in possible_paths:
+            if path.exists() and path.is_dir():
                 return path
 
-        # 4. Fallback to absolute path (Windows specific)
-        fallback_path = Path(
-            r"/\specs")  # Adjusted fallback path
-        if fallback_path.exists():
-            self._debug_print(f"Using fallback path: {fallback_path}", "INFO")
-            return fallback_path
+        # Default
+        return current / "specs"
 
-        # 5. Create default location if not found
-        default = current / "specs"
-        default.mkdir(parents=True, exist_ok=True)
-        print(f"⚠️  No existing specs directory found, created: {default}")
-        return default
-
-    def _setup_output_dir(self, output_dir: Optional[str]) -> Path:
-        """Setup output directory for .feature files"""
+    def _setup_output_base_dir(self, output_dir: Optional[str], project_root: Optional[str]) -> Path:
+        """Setup output base directory"""
         if output_dir:
-            path = Path(output_dir)
-        elif self.project_root:
-            # Adjusted to set the output directory relative to AluBDDVerilog
-            path = self.project_root / "HdlFormalVerifier" / "output" / "bdd"
+            base_dir = Path(output_dir)
+        elif project_root:
+            base_dir = Path(project_root) / "output" / "bdd"
         else:
-            # Adjusted to set the output directory relative to AluBDDVerilog
-            path = self.spec_dir.parent/ "output" / "bdd"
-        path.mkdir(parents=True, exist_ok=True)
-        return path
-
-    def _debug_print(self, message: str, level: str = "INFO"):
-        """Debug output"""
-        if not self.debug and level == "DEBUG":
-            return
-
-        icons = {
-            "INFO": "ℹ️ ",
-            "DEBUG": "🔍",
-            "WARN": "⚠️ ",
-            "ERROR": "❌",
-            "SUCCESS": "✅",
-            "STEP": "📌",
-        }
-        icon = icons.get(level, "  ")
-        print(f"   {icon} [{level}] {message}")
-
-    def scan_specs(self) -> List[Path]:
-        """
-        Scan specs directory for specification files.
-
-        Returns:
-            List of spec file paths (JSON preferred over TXT)
-        """
-        print(f"\n🔍 Scanning for specs in: {self.spec_dir}")
-
-        json_files = list(self.spec_dir.glob("*.json"))
-        txt_files = list(self.spec_dir.glob("*.txt"))
-
-        # Prefer JSON files
-        spec_files = json_files if json_files else txt_files
-
-        if not spec_files:
-            print(f"   ⚠️  No spec files found in {self.spec_dir}")
-            return []
-
-        print(f"   ✅ Found {len(spec_files)} spec file(s):")
-        for f in spec_files:
-            print(f"      • {f.name}")
-
-        return spec_files
-
-    def load_spec(self, spec_path: Path) -> Dict:
-        """
-        Load specification from file.
-
-        Args:
-            spec_path: Path to spec file
-
-        Returns:
-            Specification dictionary
-        """
-        print(f"\n📖 Loading spec: {spec_path.name}")
-
-        if spec_path.suffix == '.json':
-            return self._load_json_spec(spec_path)
-        else:
-            return self._load_txt_spec(spec_path)
-
-    def _load_json_spec(self, path: Path) -> Dict:
-        """Load JSON specification"""
-        with open(path, 'r', encoding='utf-8') as f:
-            spec = json.load(f)
-
-        self._debug_print(f"Loaded JSON spec: {spec.get('module_name', 'unknown')}", "SUCCESS")
-        self._debug_print(f"Bitwidth: {spec.get('bitwidth', 16)}", "DEBUG")
-        self._debug_print(f"Operations: {len(spec.get('operations', []))}", "DEBUG")
-
-        return spec
-
-    def _load_txt_spec(self, path: Path) -> Dict:
-        """Load and parse TXT specification"""
-        with open(path, 'r', encoding='utf-8') as f:
-            content = f.read()
-
-        # Extract bitwidth
-        bitwidth_match = re.search(r'(\d+)[-\s]?bit', content, re.IGNORECASE)
-        bitwidth = int(bitwidth_match.group(1)) if bitwidth_match else 16
-
-        # Extract operations from OPERATIONS section
-        operations = []
-        op_match = re.search(r'OPERATIONS.*?(?=\n\n|\nFLAG|\nINTERFACE|\nTEST|\Z)', content, re.DOTALL | re.IGNORECASE)
-
-        if op_match:
-            op_section = op_match.group(0)
-            for line in op_section.split('\n'):
-                # Match pattern like "0000: ADD - Addition"
-                match = re.match(r'(\d{4}):\s*(\w+)\s*[-–]\s*(.+)', line.strip())
-                if match:
-                    operations.append({
-                        "opcode": match.group(1),
-                        "name": match.group(2),
-                        "description": match.group(3).strip()
-                    })
-
-        # If no operations found, use defaults
-        if not operations:
-            operations = [
-                {"name": k, "opcode": v["opcode"], "description": v["description"]}
-                for k, v in list(self.DEFAULT_OPERATIONS.items())[:4]
+            # Try to find existing output directory
+            current = Path.cwd()
+            possible_paths = [
+                current / "output" / "bdd",
+                current / "outputs" / "bdd",
+                current.parent / "output" / "bdd",
             ]
 
-        spec = {
-            "module_name": f"alu_{bitwidth}bit",
-            "bitwidth": bitwidth,
-            "operations": operations,
-            "raw_text": content
+            for path in possible_paths:
+                if path.parent.exists():  # Check if parent (output/) exists
+                    base_dir = path
+                    break
+            else:
+                # Default
+                base_dir = current / "output" / "bdd"
+
+        # Ensure directory exists
+        base_dir.mkdir(parents=True, exist_ok=True)
+        return base_dir
+
+    def process_all_llms(self, num_examples: int = 5) -> Dict:
+        """
+        Process all LLM directories and generate BDD files.
+
+        Args:
+            num_examples: Number of test examples per scenario
+
+        Returns:
+            Dictionary with results for each LLM
+        """
+        print("\n" + "=" * 80)
+        print("🚀 Multi-LLM BDD Generation")
+        print("=" * 80)
+
+        # Find all LLM directories
+        llm_dirs = [d for d in self.specs_base_dir.iterdir()
+                   if d.is_dir() and not d.name.startswith('.')]
+
+        if not llm_dirs:
+            print(f"\n❌ No LLM directories found in {self.specs_base_dir}")
+            return {}
+
+        print(f"\n📂 Found {len(llm_dirs)} LLM directories:")
+        for d in llm_dirs:
+            print(f"   • {d.name}")
+
+        results = {}
+
+        # Process each LLM directory
+        for llm_dir in sorted(llm_dirs):
+            llm_name = llm_dir.name
+            print(f"\n{'='*80}")
+            print(f"🔄 Processing LLM: {llm_name.upper()}")
+            print(f"{'='*80}")
+
+            result = self.process_llm_directory(llm_dir, llm_name, num_examples)
+            results[llm_name] = result
+
+        # Print summary
+        self._print_summary(results)
+
+        return results
+
+    def process_llm_directory(self, llm_dir: Path, llm_name: str, num_examples: int = 5) -> Dict:
+        """
+        Process a single LLM directory.
+
+        Args:
+            llm_dir: Path to LLM directory (e.g., specs/gemini/)
+            llm_name: LLM name (e.g., "gemini")
+            num_examples: Number of test examples per scenario
+
+        Returns:
+            Dictionary with processing results
+        """
+        result = {
+            'llm': llm_name,
+            'total': 0,
+            'success': 0,
+            'failed_specs': 0,
+            'skipped': 0,
+            'errors': 0,
+            'generated_files': []
         }
 
-        self._debug_print(f"Parsed TXT spec: {spec['module_name']}", "SUCCESS")
-        return spec
+        # Find all JSON spec files
+        spec_files = list(llm_dir.glob('*.json'))
+        result['total'] = len(spec_files)
+
+        if not spec_files:
+            print(f"   ⚠️  No spec files found in {llm_dir}")
+            return result
+
+        print(f"\n   📄 Found {len(spec_files)} spec files")
+
+        # Create output directory for this LLM
+        llm_output_dir = self.output_base_dir / llm_name
+        llm_output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Process each spec file
+        for spec_file in spec_files:
+            try:
+                # Load spec
+                with open(spec_file, 'r', encoding='utf-8') as f:
+                    spec = json.load(f)
+
+                # Check if spec failed
+                if spec.get('api_call_failed'):
+                    print(f"   ⏭️  Skipping FAILED spec: {spec_file.name}")
+                    print(f"      Error: {spec.get('error_message', 'Unknown')}")
+                    result['failed_specs'] += 1
+                    continue
+
+                # Check if has operations
+                operations = spec.get('operations', {})
+                if not operations or len(operations) == 0:
+                    print(f"   ⏭️  Skipping spec with NO operations: {spec_file.name}")
+                    result['skipped'] += 1
+                    continue
+
+                # Generate BDD feature
+                print(f"\n   ✅ Processing: {spec_file.name}")
+                feature_content = self.generate_feature(spec, num_examples)
+
+                # Generate output filename
+                timestamp = spec.get('metadata', {}).get('timestamp',
+                                                        datetime.now().strftime("%Y%m%d_%H%M%S"))
+                bitwidth = spec.get('bitwidth', 16)
+                feature_filename = f"alu_{bitwidth}bit_{timestamp}.feature"
+
+                # Save feature file
+                feature_path = llm_output_dir / feature_filename
+                with open(feature_path, 'w', encoding='utf-8') as f:
+                    f.write(feature_content)
+
+                print(f"      💾 Saved: {feature_path.relative_to(self.output_base_dir.parent)}")
+
+                result['success'] += 1
+                result['generated_files'].append(str(feature_path))
+
+            except Exception as e:
+                print(f"   ❌ Error processing {spec_file.name}: {e}")
+                result['errors'] += 1
+                if self.debug:
+                    import traceback
+                    traceback.print_exc()
+
+        return result
 
     def generate_feature(self, spec: Dict, num_examples: int = 5) -> str:
         """
@@ -272,17 +278,20 @@ class BDDGenerator:
         Returns:
             Complete .feature file content
         """
-        print(f"\n🔧 Generating BDD feature...")
-
         bitwidth = spec.get('bitwidth', 16)
-        module_name = spec.get('module_name', f'alu_{bitwidth}bit')
-        operations = spec.get('operations', [])
+        operations = spec.get('operations', {})
+
+        # Get metadata
+        metadata = spec.get('metadata', {})
+        llm_provider = metadata.get('llm_provider', 'unknown')
+        timestamp = metadata.get('timestamp', datetime.now().strftime("%Y%m%d_%H%M%S"))
 
         # Build feature header
         feature = f"""# Auto-generated BDD Feature File
-# Generated from: {module_name}
-# Timestamp: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-# Generator: bdd_generator.py (deterministic, no LLM)
+# Source: {llm_provider} LLM
+# Generated: {timestamp}
+# Generator: bdd_generator_v2.py (deterministic, no LLM)
+# Bitwidth: {bitwidth}-bit
 
 Feature: {bitwidth}-bit ALU Verification
   As a hardware verification engineer
@@ -295,12 +304,12 @@ Feature: {bitwidth}-bit ALU Verification
 """
 
         # Generate scenario for each operation
-        for op in operations:
-            op_name = op.get('name', 'UNKNOWN')
-            op_desc = op.get('description', f'{op_name} operation')
-            opcode = op.get('opcode', '0000')
+        for op_name, op_info in operations.items():
+            op_desc = op_info.get('description', f'{op_name} operation')
+            opcode = op_info.get('opcode', '0000')
 
-            self._debug_print(f"Generating scenario for: {op_name}", "DEBUG")
+            if self.debug:
+                print(f"      • Generating scenario for: {op_name}")
 
             scenario = self._generate_scenario(
                 op_name=op_name,
@@ -311,16 +320,15 @@ Feature: {bitwidth}-bit ALU Verification
             )
             feature += scenario + "\n"
 
-        self._debug_print(f"Generated {len(operations)} scenarios", "SUCCESS")
         return feature
 
     def _generate_scenario(
-            self,
-            op_name: str,
-            op_desc: str,
-            opcode: str,
-            bitwidth: int,
-            num_examples: int
+        self,
+        op_name: str,
+        op_desc: str,
+        opcode: str,
+        bitwidth: int,
+        num_examples: int
     ) -> str:
         """Generate a single scenario with Examples table"""
 
@@ -347,52 +355,46 @@ Feature: {bitwidth}-bit ALU Verification
 
         return scenario
 
-    def _generate_test_examples(
-            self,
-            op_name: str,
-            bitwidth: int,
-            num_examples: int
-    ) -> List[Dict]:
-        """Generate deterministic test examples for an operation"""
+    def _generate_test_examples(self, op_name: str, bitwidth: int, num_examples: int) -> List[Dict]:
+        """
+        Generate test examples for an operation.
 
+        Includes:
+        - Basic cases
+        - Edge cases (0, max value)
+        - Random cases
+        """
         examples = []
-        max_val = (1 << bitwidth) - 1  # 8-bit: 255, 16-bit: 65535, etc.
-        half_max = max_val // 2
+        max_val = (1 << bitwidth) - 1
 
-        # Use deterministic seed based on operation name for reproducibility
-        seed = sum(ord(c) for c in op_name)
-        rng = random.Random(seed)
+        # Edge cases
+        edge_cases = [
+            (0, 0),
+            (0, 1),
+            (1, 0),
+            (max_val, 0),
+            (0, max_val),
+            (max_val, max_val),
+        ]
 
-        # Calculate safe ranges based on bitwidth
-        # For small bitwidths (8-bit), use smaller values
-        small_max = min(100, half_max)  # 8-bit: 100, but never exceed half_max
-        medium_max = min(1000, half_max)  # For equal values test
+        # Add edge cases
+        for a, b in edge_cases[:min(3, num_examples)]:
+            result, zero, overflow, negative = self._compute_result(op_name, a, b, bitwidth)
+            examples.append({
+                'a': a,
+                'b': b,
+                'result': result,
+                'zero': zero,
+                'overflow': overflow,
+                'negative': negative
+            })
 
-        for i in range(num_examples):
-            # Generate varied test cases - ALL values must be within bitwidth range
-            if i == 0:
-                # Edge case: small values (always safe)
-                a, b = 10, 5
-            elif i == 1:
-                # Edge case: equal values (within range)
-                a = rng.randint(small_max // 2, min(medium_max, half_max))
-                b = a
-            elif i == 2:
-                # Edge case: one operand is zero
-                a = rng.randint(1, small_max)
-                b = 0
-            else:
-                # Random values within safe range
-                a = rng.randint(0, half_max)
-                b = rng.randint(0, half_max)
-
-            # Calculate result based on operation
-            result, overflow = self._calculate_result(op_name, a, b, bitwidth)
-
-            # Calculate flags
-            zero = (result == 0)
-            negative = (result & (1 << (bitwidth - 1))) != 0
-
+        # Add random cases
+        remaining = num_examples - len(examples)
+        for _ in range(remaining):
+            a = random.randint(0, max_val)
+            b = random.randint(0, max_val)
+            result, zero, overflow, negative = self._compute_result(op_name, a, b, bitwidth)
             examples.append({
                 'a': a,
                 'b': b,
@@ -404,196 +406,143 @@ Feature: {bitwidth}-bit ALU Verification
 
         return examples
 
-    def _calculate_result(
-            self,
-            op_name: str,
-            a: int,
-            b: int,
-            bitwidth: int
-    ) -> tuple:
-        """Calculate ALU operation result and overflow flag"""
+    def _compute_result(self, op_name: str, a: int, b: int, bitwidth: int) -> Tuple[int, bool, bool, bool]:
+        """
+        Compute expected result and flags for an operation.
 
+        Returns:
+            (result, zero_flag, overflow_flag, negative_flag)
+        """
         max_val = (1 << bitwidth) - 1
-        overflow = False
 
+        # Compute result
         if op_name == "ADD":
-            raw = a + b
-            overflow = raw > max_val
-            result = raw & max_val
+            result = a + b
+            overflow = result > max_val
+            result = result & max_val
         elif op_name == "SUB":
-            raw = a - b
-            overflow = raw < 0
-            result = raw & max_val
+            result = a - b
+            overflow = result < 0
+            result = result & max_val
         elif op_name == "AND":
             result = a & b
+            overflow = False
         elif op_name == "OR":
             result = a | b
+            overflow = False
         elif op_name == "XOR":
             result = a ^ b
+            overflow = False
         elif op_name == "NOT":
-            result = (~a) & max_val
+            result = ~a & max_val
+            overflow = False
         elif op_name == "SHL":
-            shift = b & 0xF  # Limit shift amount
-            raw = a << shift
-            overflow = raw > max_val
-            result = raw & max_val
+            result = (a << (b & 0xF)) & max_val
+            overflow = False
         elif op_name == "SHR":
-            shift = b & 0xF
-            result = a >> shift
+            result = (a >> (b & 0xF)) & max_val
+            overflow = False
         else:
             result = 0
+            overflow = False
 
-        return result, overflow
+        # Compute flags
+        zero = (result == 0)
+        negative = bool(result & (1 << (bitwidth - 1)))
 
-    def generate_all(self, num_examples: int = 5) -> List[Path]:
-        """
-        Generate .feature files for all specs in the directory.
+        return result, zero, overflow, negative
 
-        Args:
-            num_examples: Number of test examples per scenario
+    def _print_summary(self, results: Dict):
+        """Print summary of all LLM processing"""
+        print("\n" + "=" * 80)
+        print("📊 BDD Generation Summary")
+        print("=" * 80)
 
-        Returns:
-            List of generated .feature file paths
-        """
-        print("\n" + "=" * 70)
-        print("🚀 BDD Generator - Starting generation")
-        print("=" * 70)
+        total_success = 0
+        total_failed = 0
+        total_skipped = 0
+        total_errors = 0
 
-        spec_files = self.scan_specs()
+        for llm_name, result in sorted(results.items()):
+            total_success += result['success']
+            total_failed += result['failed_specs']
+            total_skipped += result['skipped']
+            total_errors += result['errors']
 
-        if not spec_files:
-            print("\n❌ No spec files found. Please run spec_generator.py first.")
-            return []
+            print(f"\n{llm_name.upper()}:")
+            print(f"  Total specs: {result['total']}")
+            print(f"  ✅ Generated: {result['success']}")
+            if result['failed_specs'] > 0:
+                print(f"  ⏭️  Skipped (failed specs): {result['failed_specs']}")
+            if result['skipped'] > 0:
+                print(f"  ⏭️  Skipped (no operations): {result['skipped']}")
+            if result['errors'] > 0:
+                print(f"  ❌ Errors: {result['errors']}")
 
-        generated_files = []
+            if result['generated_files']:
+                print(f"  📄 Files:")
+                for f in result['generated_files']:
+                    print(f"     • {Path(f).name}")
 
-        for spec_path in spec_files:
-            try:
-                # Load spec
-                spec = self.load_spec(spec_path)
+        print(f"\n{'='*80}")
+        print(f"Overall:")
+        print(f"  ✅ Total generated: {total_success}")
+        print(f"  ⏭️  Total skipped: {total_failed + total_skipped}")
+        print(f"  ❌ Total errors: {total_errors}")
+        print(f"{'='*80}")
 
-                # Generate feature content
-                feature_content = self.generate_feature(spec, num_examples)
-
-                # Save feature file
-                feature_name = spec_path.stem.replace('_spec', '') + '.feature'
-                feature_path = self.output_dir / feature_name
-
-                with open(feature_path, 'w', encoding='utf-8') as f:
-                    f.write(feature_content)
-
-                print(f"\n✅ Generated: {feature_path}")
-                generated_files.append(feature_path)
-
-            except Exception as e:
-                print(f"\n❌ Error processing {spec_path.name}: {e}")
-                if self.debug:
-                    import traceback
-                    traceback.print_exc()
-
-        print("\n" + "=" * 70)
-        print(f"✨ Generation complete! Created {len(generated_files)} .feature file(s)")
-        print("=" * 70)
-
-        return generated_files
-
-    def generate_from_spec_file(self, spec_path: Union[str, Path], num_examples: int = 5) -> Path:
-        """
-        Generate .feature file from a specific spec file.
-
-        Args:
-            spec_path: Path to the spec file
-            num_examples: Number of test examples per scenario
-
-        Returns:
-            Path to generated .feature file
-        """
-        spec_path = Path(spec_path)
-
-        if not spec_path.exists():
-            raise FileNotFoundError(f"Spec file not found: {spec_path}")
-
-        spec = self.load_spec(spec_path)
-        feature_content = self.generate_feature(spec, num_examples)
-
-        feature_name = spec_path.stem.replace('_spec', '') + '.feature'
-        feature_path = self.output_dir / feature_name
-
-        with open(feature_path, 'w', encoding='utf-8') as f:
-            f.write(feature_content)
-
-        print(f"\n✅ Generated: {feature_path}")
-        return feature_path
+        if total_failed > 0:
+            print(f"\n💡 Tip: {total_failed} spec(s) were skipped because API calls failed.")
+            print(f"   Check proxy settings and re-run spec_generator.py for these LLMs.")
 
 
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(
-        description='Generate BDD .feature files from ALU specification (No LLM)',
+        description='Generate BDD .feature files for multiple LLMs',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  # Generate from all specs in default directory
-  python bdd_generator.py
+  # Process all LLMs (auto-detect directories)
+  python bdd_generator_v2.py
 
-  # Specify spec directory
-  python bdd_generator.py --spec-dir ./specs
-
-  # Generate from specific spec file
-  python bdd_generator.py --spec-file ./specs/alu_16bit_spec.json
-
-  # Custom output directory
-  python bdd_generator.py --output-dir ./output/bdd
-
-  # More examples per scenario
-  python bdd_generator.py --examples 10
+  # Specify directories
+  python bdd_generator_v2.py --specs specs/ --output output/bdd/
 
   # With project root
-  python bdd_generator.py --project-root D:/DE/HdlFormalVerifierLLM/HdlFormalVerifier
+  python bdd_generator_v2.py --project-root /path/to/project
 
-Note: This generator does NOT use LLM. It performs deterministic
-transformation from spec to BDD scenarios.
+  # Custom number of test examples
+  python bdd_generator_v2.py --num-examples 10
         '''
     )
 
-    parser.add_argument('--spec-dir', help='Directory containing spec files')
-    parser.add_argument('--spec-file', help='Specific spec file to process')
-    parser.add_argument('--output-dir', help='Output directory for .feature files')
+    parser.add_argument('--specs', help='Specs base directory (default: auto-detect)')
+    parser.add_argument('--output', help='Output base directory (default: output/bdd/)')
     parser.add_argument('--project-root', help='Project root directory')
-    parser.add_argument('--examples', type=int, default=5, help='Number of examples per scenario (default: 5)')
-    parser.add_argument('--debug', action='store_true', default=True, help='Enable debug output')
+    parser.add_argument('--num-examples', type=int, default=5,
+                       help='Number of test examples per scenario (default: 5)')
+    parser.add_argument('--no-debug', action='store_true',
+                       help='Disable debug output')
 
     args = parser.parse_args()
 
     # Create generator
-    generator = BDDGenerator(
-        spec_dir=args.spec_dir,
-        output_dir=args.output_dir,
+    generator = MultiLLMBDDGenerator(
+        specs_base_dir=args.specs,
+        output_base_dir=args.output,
         project_root=args.project_root,
-        debug=args.debug
+        debug=not args.no_debug
     )
 
-    # Generate
-    if args.spec_file:
-        # Single file mode
-        feature_path = generator.generate_from_spec_file(args.spec_file, args.examples)
-        print(f"\n📄 Generated: {feature_path}")
-    else:
-        # Batch mode - process all specs
-        generated = generator.generate_all(args.examples)
+    # Process all LLMs
+    results = generator.process_all_llms(num_examples=args.num_examples)
 
-        if generated:
-            print("\n📋 Generated files:")
-            for path in generated:
-                print(f"   • {path}")
-
-            print("\n📋 NEXT STEPS:")
-            print("=" * 70)
-            print(f"1. Review .feature files in: {generator.output_dir}")
-            print(f"2. Generate testbench: python verilog_generator.py --feature-dir {generator.output_dir}")
-            print(f"3. Run simulation:     python simulation_controller.py")
-            print("=" * 70)
+    # Return exit code
+    total_errors = sum(r['errors'] for r in results.values())
+    return 0 if total_errors == 0 else 1
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    sys.exit(main())

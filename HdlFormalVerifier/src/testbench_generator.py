@@ -2,12 +2,13 @@
 Testbench Generator - Generate Verilog testbench from BDD .feature files
 =========================================================================
 
+ENHANCED VERSION: Multi-LLM Support with organized directory structure
+
 This module reads .feature files and generates Verilog testbench.
 NO LLM is used - this is a deterministic transformation.
-It does NOT generate ALU design (that's done by alu_generator.py).
 
 ARCHITECTURE:
-    output/bdd/*.feature  (from bdd_generator.py)
+    output/bdd/{llm}/*.feature  (from bdd_generator.py)
            │
            ▼
     ┌────────────────────┐
@@ -16,24 +17,39 @@ ARCHITECTURE:
     └──────────┬─────────┘
                │
                ▼
-       output/verilog/testbench.v
+       output/verilog/{llm}/testbench.v
                │
-               ├── Instantiates ──► output/verilog/ALU.v (from alu_generator.py)
+               ├── Tests ──► output/dut/alu.v (fixed DUT)
                │
                ▼
           Simulation (iverilog)
 
+DIRECTORY MAPPING:
+    output/bdd/groq/alu_16bit.feature     → output/verilog/groq/alu_16bit_tb.v
+    output/bdd/deepseek/alu_16bit.feature → output/verilog/deepseek/alu_16bit_tb.v
+    output/bdd/openai/alu_16bit.feature   → output/verilog/openai/alu_16bit_tb.v
+
+All testbenches test the SAME fixed DUT: output/dut/alu_16bit.v
+
+NEW FEATURES:
+- ✅ Recursive scanning of LLM subdirectories
+- ✅ Maintains LLM-specific directory structure
+- ✅ Batch processing for all LLMs
+- ✅ No hardcoded paths
+- ✅ Automatic DUT detection
+
 PURPOSE:
-- Read .feature files from output/bdd/
+- Read .feature files from output/bdd/{llm}/
 - Parse test scenarios and expected results
-- Generate testbench.v that tests the ALU.v (DUT)
+- Generate testbench.v for each LLM in separate directories
 - Support decimal/hexadecimal number formats
 - Generate VCD dump for waveform viewing
 
 This ensures:
-1. Deterministic output (same .feature → same testbench)
-2. Independence from LLM (no API calls needed)
-3. Complete separation: testbench tests ALU, doesn't generate it
+1. Fair comparison (all test the same DUT)
+2. Deterministic output (same .feature → same testbench)
+3. Independence from LLM (no API calls needed)
+4. Clear organization by LLM provider
 """
 
 import os
@@ -100,143 +116,94 @@ class FeatureParser:
         """Infer bitwidth from value range"""
         max_value = 0
         for scenario in self.scenarios:
-            for key in ['a', 'b', 'expected_result']:
+            for key in ['a', 'b', 'result']:
                 if key in scenario:
-                    max_value = max(max_value, scenario[key])
+                    val = scenario[key]
+                    if isinstance(val, int) and val > max_value:
+                        max_value = val
 
-        if max_value <= 0xFF:
+        # Determine bitwidth from max value
+        if max_value <= 255:
             return 8
-        elif max_value <= 0xFFFF:
+        elif max_value <= 65535:
             return 16
-        elif max_value <= 0xFFFFFFFF:
+        elif max_value <= 4294967295:
             return 32
         else:
             return 64
 
     def _detect_number_format(self, content: str):
-        """Auto-detect number format"""
-        has_hex_prefix = bool(re.search(r'0[xX][0-9A-Fa-f]+', content))
-
-        if has_hex_prefix:
+        """Detect number format from content"""
+        # Check for hex patterns (0x...)
+        if re.search(r'\b0x[0-9a-fA-F]+\b', content):
             self.number_format = NumberFormat.HEXADECIMAL
-            if self.debug:
-                print("   🔍 Detected number format: hexadecimal")
+        # Check for binary patterns (0b...)
+        elif re.search(r'\b0b[01]+\b', content):
+            self.number_format = NumberFormat.BINARY
         else:
             self.number_format = NumberFormat.DECIMAL
-            if self.debug:
-                print("   🔍 Detected number format: decimal")
 
     def _extract_operations(self, content: str):
-        """Extract opcode definitions"""
-        # Pattern: "opcode 0000" or "opcode is 0000 (ADD)"
-        opcode_patterns = [
-            r'opcode\s+(?:is\s+)?["\']?([01]{4})["\']?\s*\((\w+)\)',
-            r'opcode\s+(?:is\s+)?["\']?([01]{4})["\']?\s+for\s+(\w+)',
-            r'perform\s+the\s+(\w+)\s+operation\s+with\s+opcode\s+([01]{4})',
-        ]
+        """Extract operation-to-opcode mapping"""
+        # Look for opcode definitions in comments or background
+        opcode_pattern = r'(\w+)\s*(?:operation|opcode|code)?\s*(?:is|=|:)?\s*["\']?([0-9a-fA-Fx]+)["\']?'
 
-        for pattern in opcode_patterns:
-            matches = re.findall(pattern, content, re.IGNORECASE)
-            for match in matches:
-                if len(match) == 2:
-                    # Determine which is opcode and which is operation
-                    if match[0].isdigit() or set(match[0]) <= {'0', '1'}:
-                        opcode, op_name = match[0], match[1]
-                    else:
-                        op_name, opcode = match[0], match[1]
-                    self.operations[opcode] = op_name.upper()
+        for match in re.finditer(opcode_pattern, content, re.IGNORECASE):
+            op_name = match.group(1).upper()
+            opcode = match.group(2)
 
-        # Default operations if none found
-        if not self.operations:
-            if self.debug:
-                print("   ⚠️  No opcode definitions found, using defaults")
-            self.operations = {
-                '0000': 'ADD', '0001': 'SUB', '0010': 'AND', '0011': 'OR',
-                '0100': 'XOR', '0101': 'NOT', '0110': 'SHL', '0111': 'SHR'
-            }
+            # Normalize opcode
+            if opcode.startswith('0x') or opcode.startswith('0X'):
+                opcode_int = int(opcode, 16)
+                opcode = format(opcode_int, '04b')
+            elif all(c in '01' for c in opcode):
+                opcode = opcode.zfill(4)
+
+            self.operations[opcode] = op_name
 
     def _extract_scenarios(self, content: str):
         """Extract test scenarios from Examples tables"""
-        scenarios = []
+        # Find all Examples sections
+        examples_pattern = r'Examples?:\s*\n((?:\s*\|.*\n)+)'
 
-        # Find Scenario Outline blocks with Examples
-        scenario_pattern = r'Scenario\s*(?:Outline)?[:\s]*(.+?)(?=Scenario|Feature:|$)'
-        scenario_matches = re.findall(scenario_pattern, content, re.DOTALL | re.IGNORECASE)
+        for match in re.finditer(examples_pattern, content, re.MULTILINE):
+            table_text = match.group(1)
+            rows = [row.strip() for row in table_text.strip().split('\n')]
 
-        for scenario_content in scenario_matches:
-            parsed = self._parse_scenario_block(scenario_content)
-            if parsed:
-                scenarios.extend(parsed)
+            if len(rows) < 2:
+                continue
 
-        self.scenarios = scenarios
-
-    def _parse_scenario_block(self, content: str) -> List[Dict]:
-        """Parse a single scenario block"""
-        scenarios = []
-
-        # Extract opcode from scenario
-        opcode_match = re.search(r'opcode\s+([01]{4})', content, re.IGNORECASE)
-        opcode = opcode_match.group(1) if opcode_match else '0000'
-
-        # Find Examples table
-        examples_match = re.search(
-            r'Examples:\s*\n\s*\|(.+?)\n((?:\s*\|.+\n?)+)',
-            content,
-            re.DOTALL
-        )
-
-        if examples_match:
             # Parse header
-            header_line = examples_match.group(1).strip('| \t')
-            headers = [h.strip().lower() for h in header_line.split('|') if h.strip()]
+            header = [col.strip() for col in rows[0].split('|') if col.strip()]
 
             # Parse data rows
-            data_section = examples_match.group(2).strip()
-            for line in data_section.split('\n'):
-                line = line.strip()
-                if not line or not line.startswith('|'):
+            for row in rows[1:]:
+                cols = [col.strip() for col in row.split('|') if col.strip()]
+
+                if len(cols) != len(header):
                     continue
 
-                values = [v.strip() for v in line.strip('|').split('|')]
+                scenario = {}
+                for col_name, col_value in zip(header, cols):
+                    parsed_value = self._parse_value(col_value)
+                    if parsed_value is not None:
+                        scenario[col_name.lower()] = parsed_value
+                    else:
+                        scenario[col_name.lower()] = col_value
 
-                if len(values) >= 2:
-                    scenario = {'opcode': opcode}
+                if scenario:
+                    self.scenarios.append(scenario)
 
-                    for i, header in enumerate(headers):
-                        if i < len(values):
-                            value = self._parse_number(values[i])
-                            if value is not None:
-                                # Map header names to standard keys
-                                if header in ['a', 'operand_a']:
-                                    scenario['a'] = value
-                                elif header in ['b', 'operand_b']:
-                                    scenario['b'] = value
-                                elif header in ['expected_result', 'result', 'expected']:
-                                    scenario['expected_result'] = value
-                                elif header in ['zero_flag', 'zero']:
-                                    scenario['zero_flag'] = str(value).lower() in ['true', '1', 'yes']
-                                elif header in ['overflow', 'overflow_flag']:
-                                    scenario['overflow'] = str(value).lower() in ['true', '1', 'yes']
-                                elif header in ['negative_flag', 'negative']:
-                                    scenario['negative_flag'] = str(value).lower() in ['true', '1', 'yes']
-                                elif header == 'opcode':
-                                    scenario['opcode'] = values[i].strip()
+    def _parse_value(self, value_str: str) -> Optional[int]:
+        """Parse value (hex/decimal/binary)"""
+        value_str = str(value_str).strip()
 
-                    if 'a' in scenario and 'b' in scenario:
-                        scenarios.append(scenario)
-
-        return scenarios
-
-    def _parse_number(self, value_str: str) -> Optional[int]:
-        """Parse number string (decimal or hex)"""
         try:
-            value_str = value_str.strip()
+            # Binary (0b...)
+            if value_str.startswith('0b') or value_str.startswith('0B'):
+                return int(value_str, 2)
 
-            # Boolean values
-            if value_str.lower() in ['true', 'false']:
-                return 1 if value_str.lower() == 'true' else 0
-
-            # Hex format
+            # Hexadecimal (0x...)
             if value_str.startswith('0x') or value_str.startswith('0X'):
                 return int(value_str, 16)
 
@@ -250,6 +217,8 @@ class TestbenchGenerator:
     """
     Generate Verilog testbench from .feature files.
 
+    ENHANCED: Multi-LLM support with directory structure preservation
+
     This generator ONLY creates testbench files.
     ALU design is generated separately by alu_generator.py.
     """
@@ -258,6 +227,7 @@ class TestbenchGenerator:
         self,
         feature_dir: Optional[str] = None,
         output_dir: Optional[str] = None,
+        dut_dir: Optional[str] = None,
         project_root: Optional[str] = None,
         dut_module_name: Optional[str] = None,
         debug: bool = True
@@ -266,10 +236,11 @@ class TestbenchGenerator:
         Initialize testbench generator.
 
         Args:
-            feature_dir: Directory containing .feature files
-            output_dir: Directory to save testbench files
+            feature_dir: Directory containing .feature files (supports LLM subdirs)
+            output_dir: Base directory to save testbench files
+            dut_dir: Directory containing DUT .v files (default: output/dut)
             project_root: Project root directory
-            dut_module_name: Name of DUT module (from alu_generator)
+            dut_module_name: Name of DUT module (auto-detected if not specified)
             debug: Enable debug output
         """
         self.debug = debug
@@ -278,10 +249,12 @@ class TestbenchGenerator:
 
         # Setup paths
         self.feature_dir = self._find_feature_dir(feature_dir)
-        self.output_dir = self._setup_output_dir(output_dir)
+        self.output_base_dir = self._setup_output_base_dir(output_dir)
+        self.dut_dir = self._find_dut_dir(dut_dir)
 
         print(f"📁 Feature directory: {self.feature_dir}")
-        print(f"📁 Output directory: {self.output_dir}")
+        print(f"📁 Output base directory: {self.output_base_dir}")
+        print(f"📁 DUT directory: {self.dut_dir}")
 
     def _find_feature_dir(self, feature_dir: Optional[str]) -> Path:
         """Find .feature files directory dynamically"""
@@ -312,19 +285,14 @@ class TestbenchGenerator:
                 self._debug_print(f"Found features at: {path}", "SUCCESS")
                 return path
 
-        # 4. Fallback to absolute path
-        fallback_path = Path(r"D:\DE\RQ\MultiLLM_BDD_Comparison\HdlFormalVerifier\output\verilog")
-        if fallback_path.exists():
-            return fallback_path
-
-        # 5. Create default
+        # 4. Create default
         default = current / "output" / "bdd"
         default.mkdir(parents=True, exist_ok=True)
         print(f"⚠️  No feature directory found, created: {default}")
         return default
 
-    def _setup_output_dir(self, output_dir: Optional[str]) -> Path:
-        """Setup output directory for testbench files"""
+    def _setup_output_base_dir(self, output_dir: Optional[str]) -> Path:
+        """Setup base output directory for testbench files"""
         if output_dir:
             path = Path(output_dir)
         elif self.project_root:
@@ -334,6 +302,26 @@ class TestbenchGenerator:
             path = self.feature_dir.parent / "verilog"
 
         path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _find_dut_dir(self, dut_dir: Optional[str]) -> Path:
+        """Find DUT directory"""
+        if dut_dir:
+            path = Path(dut_dir)
+            if path.exists():
+                return path
+
+        # Default: output/dut
+        if self.project_root:
+            path = self.project_root / "output" / "dut"
+        else:
+            path = self.feature_dir.parent / "dut"
+
+        if not path.exists():
+            print(f"⚠️  DUT directory not found: {path}")
+            print(f"   Creating directory...")
+            path.mkdir(parents=True, exist_ok=True)
+
         return path
 
     def _debug_print(self, message: str, level: str = "INFO"):
@@ -348,19 +336,45 @@ class TestbenchGenerator:
         icon = icons.get(level, "  ")
         print(f"   {icon} [{level}] {message}")
 
-    def scan_features(self) -> List[Path]:
-        """Scan for .feature files"""
+    def scan_features(self) -> List[Tuple[Path, str]]:
+        """
+        Scan for .feature files, including LLM subdirectories.
+
+        Returns:
+            List of (feature_path, llm_name) tuples
+        """
         print(f"\n🔍 Scanning for .feature files in: {self.feature_dir}")
 
-        feature_files = list(self.feature_dir.glob("*.feature"))
+        feature_files = []
+
+        # Check root directory
+        for f in self.feature_dir.glob("*.feature"):
+            feature_files.append((f, "default"))
+
+        # Check LLM subdirectories
+        for subdir in self.feature_dir.iterdir():
+            if subdir.is_dir():
+                llm_name = subdir.name
+                for f in subdir.glob("*.feature"):
+                    feature_files.append((f, llm_name))
 
         if not feature_files:
             print(f"   ⚠️  No .feature files found")
             return []
 
         print(f"   ✅ Found {len(feature_files)} feature file(s):")
-        for f in feature_files:
-            print(f"      • {f.name}")
+
+        # Group by LLM for display
+        by_llm = {}
+        for path, llm in feature_files:
+            if llm not in by_llm:
+                by_llm[llm] = []
+            by_llm[llm].append(path)
+
+        for llm, paths in sorted(by_llm.items()):
+            print(f"      📂 {llm}:")
+            for p in paths:
+                print(f"         • {p.name}")
 
         return feature_files
 
@@ -371,7 +385,7 @@ class TestbenchGenerator:
         Priority:
         1. Explicitly specified dut_module_name
         2. Infer from bitwidth (alu_{bitwidth}bit)
-        3. Search for existing ALU .v files
+        3. Search for existing ALU .v files in DUT directory
         4. Default fallback
         """
         # 1. Use explicitly specified name
@@ -384,8 +398,8 @@ class TestbenchGenerator:
             self._debug_print(f"DUT module from bitwidth: {module_name}", "INFO")
             return module_name
 
-        # 3. Search for ALU .v files in output directory
-        verilog_files = list(self.output_dir.glob("alu_*.v"))
+        # 3. Search for ALU .v files in DUT directory
+        verilog_files = list(self.dut_dir.glob("alu_*.v"))
 
         for vf in verilog_files:
             # Skip testbench files
@@ -399,7 +413,7 @@ class TestbenchGenerator:
         # 4. Default fallback
         return "alu_16bit"
 
-    def generate_testbench(self, spec: Dict, feature_name: str) -> str:
+    def generate_testbench(self, spec: Dict, feature_name: str, llm_name: str = "default") -> str:
         """Generate testbench Verilog code"""
         bitwidth = spec['bitwidth']
         operations = spec['operations']
@@ -415,10 +429,11 @@ class TestbenchGenerator:
         # Header
         lines.append(f"//==============================================================================")
         lines.append(f"// Testbench: {feature_name}")
+        lines.append(f"// LLM Provider: {llm_name}")
         lines.append(f"// Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         lines.append(f"// Generator: testbench_generator.py (deterministic, no LLM)")
         lines.append(f"//")
-        lines.append(f"// DUT Module: {dut_module}")
+        lines.append(f"// DUT Module: {dut_module} (from {self.dut_dir})")
         lines.append(f"// Bitwidth: {bitwidth}-bit")
         lines.append(f"// Test cases: {len(scenarios)}")
         lines.append(f"// Number format: {number_format.value}")
@@ -433,11 +448,13 @@ class TestbenchGenerator:
         lines.append("    //--------------------------------------------------------------------------")
         lines.append("    // Test Signals")
         lines.append("    //--------------------------------------------------------------------------")
+        lines.append(f"    reg clk;")
+        lines.append(f"    reg rst;")
         lines.append(f"    reg  [{bitwidth-1}:0] a;")
         lines.append(f"    reg  [{bitwidth-1}:0] b;")
         lines.append(f"    reg  [{opcode_width-1}:0] opcode;")
         lines.append(f"    wire [{bitwidth-1}:0] result;")
-        lines.append(f"    wire zero, carry, overflow, negative;")
+        lines.append(f"    wire zero, overflow, negative;")
         lines.append("")
         lines.append("    // Test counters")
         lines.append("    integer passed = 0;")
@@ -449,142 +466,143 @@ class TestbenchGenerator:
         lines.append("    //--------------------------------------------------------------------------")
         lines.append("    // Device Under Test (DUT)")
         lines.append("    //--------------------------------------------------------------------------")
-        lines.append(f"    {dut_module} uut (")
+        lines.append(f"    {dut_module} dut (")
+        lines.append(f"        .clk(clk),")
+        lines.append(f"        .rst(rst),")
         lines.append(f"        .a(a),")
         lines.append(f"        .b(b),")
         lines.append(f"        .opcode(opcode),")
         lines.append(f"        .result(result),")
         lines.append(f"        .zero(zero),")
-        lines.append(f"        .carry(carry),")
         lines.append(f"        .overflow(overflow),")
         lines.append(f"        .negative(negative)")
         lines.append(f"    );")
         lines.append("")
 
-        # Test sequence
+        # Clock generation
         lines.append("    //--------------------------------------------------------------------------")
-        lines.append("    // Test Sequence")
+        lines.append("    // Clock Generation")
         lines.append("    //--------------------------------------------------------------------------")
         lines.append("    initial begin")
-        lines.append(f'        $display("========================================");')
-        lines.append(f'        $display("Testbench: {feature_name}");')
-        lines.append(f'        $display("DUT: {dut_module}");')
-        lines.append(f'        $display("========================================");')
-        lines.append(f'        $display("");')
+        lines.append("        clk = 0;")
+        lines.append("        forever #5 clk = ~clk;  // 100MHz clock")
+        lines.append("    end")
         lines.append("")
 
-        # Format specifier based on number format
-        if number_format == NumberFormat.DECIMAL:
-            fmt = "%d"
-        else:
-            hex_width = (bitwidth + 3) // 4
-            fmt = f"%0{hex_width}X"
+        # Test stimulus
+        lines.append("    //--------------------------------------------------------------------------")
+        lines.append("    // Test Stimulus")
+        lines.append("    //--------------------------------------------------------------------------")
+        lines.append("    initial begin")
+        lines.append("        // VCD dump for waveform")
+        lines.append(f"        $dumpfile(\"{feature_name}_{llm_name}.vcd\");")
+        lines.append("        $dumpvars(0, dut);")
+        lines.append("")
+        lines.append(f"        $display(\"\\n{'='*70}\");")
+        lines.append(f"        $display(\"Testbench: {feature_name}\");")
+        lines.append(f"        $display(\"LLM Provider: {llm_name}\");")
+        lines.append(f"        $display(\"DUT: {dut_module} ({bitwidth}-bit)\");")
+        lines.append(f"        $display(\"Test cases: {len(scenarios)}\");")
+        lines.append(f"        $display(\"{'='*70}\\n\");")
+        lines.append("")
+        lines.append("        // Reset")
+        lines.append("        rst = 1;")
+        lines.append("        #20 rst = 0;")
+        lines.append("        #10;")
+        lines.append("")
 
         # Generate test cases
-        if scenarios:
-            for i, scenario in enumerate(scenarios, 1):
-                op_name = operations.get(scenario['opcode'], 'UNKNOWN')
-                a_val = scenario.get('a', 0)
-                b_val = scenario.get('b', 0)
-                opcode_val = scenario['opcode']
+        lines.append("        //----------------------------------------------------------------------")
+        lines.append("        // Test Cases")
+        lines.append("        //----------------------------------------------------------------------")
 
-                lines.append(f"        // Test {i}: {op_name}")
-                lines.append(f"        a = {bitwidth}'d{a_val};")
-                lines.append(f"        b = {bitwidth}'d{b_val};")
-                lines.append(f"        opcode = 4'b{opcode_val};")
-                lines.append(f"        #10;")
-                lines.append(f"        total = total + 1;")
+        for i, scenario in enumerate(scenarios, 1):
+            a_val = scenario.get('a', 0)
+            b_val = scenario.get('b', 0)
+            op_val = scenario.get('opcode', scenario.get('operation', '0000'))
+            expected = scenario.get('result', scenario.get('expected', 0))
 
-                # Display result
-                lines.append(f'        $display("Test %0d: {fmt} {op_name} {fmt} = {fmt} (Z=%b C=%b O=%b N=%b)",')
-                lines.append(f'                 total, a, b, result, zero, carry, overflow, negative);')
+            # Convert opcode to binary if needed
+            if isinstance(op_val, str):
+                if op_val.startswith('0x'):
+                    op_int = int(op_val, 16)
+                    op_val = format(op_int, '04b')
+                elif not all(c in '01' for c in op_val):
+                    # Try to find in operations mapping
+                    op_val = '0000'
 
-                # Check expected result if available
-                if 'expected_result' in scenario:
-                    expected = scenario['expected_result']
-                    lines.append(f"        if (result == {bitwidth}'d{expected}) begin")
-                    lines.append(f'            $display("  [PASS] Result correct");')
-                    lines.append(f"            passed = passed + 1;")
-                    lines.append(f"        end else begin")
-                    lines.append(f'            $display("  [FAIL] Expected: {fmt}", {bitwidth}\'d{expected});')
-                    lines.append(f"            failed = failed + 1;")
-                    lines.append(f"        end")
-                else:
-                    lines.append(f"        passed = passed + 1;  // No expected value, assume pass")
+            # Format numbers based on number format
+            if number_format == NumberFormat.HEXADECIMAL:
+                a_str = f"{bitwidth}'h{a_val:X}"
+                b_str = f"{bitwidth}'h{b_val:X}"
+                exp_str = f"{bitwidth}'h{expected:X}"
+            else:
+                a_str = f"{bitwidth}'d{a_val}"
+                b_str = f"{bitwidth}'d{b_val}"
+                exp_str = f"{bitwidth}'d{expected}"
 
-                lines.append("")
-        else:
-            # Default test cases if no scenarios
-            lines.append("        // Default test cases (no scenarios found)")
-            default_tests = [
-                (10, 5, '0000', 'ADD'),
-                (20, 8, '0001', 'SUB'),
-                (0xFF, 0x0F, '0010', 'AND'),
-                (0xF0, 0x0F, '0011', 'OR'),
-            ]
-            for i, (a_val, b_val, op, op_name) in enumerate(default_tests, 1):
-                lines.append(f"        // Test {i}: {op_name}")
-                lines.append(f"        a = {bitwidth}'d{a_val};")
-                lines.append(f"        b = {bitwidth}'d{b_val};")
-                lines.append(f"        opcode = 4'b{op};")
-                lines.append(f"        #10;")
-                lines.append(f"        total = total + 1;")
-                lines.append(f'        $display("Test %0d ({op_name}): %d op %d = %d", total, a, b, result);')
-                lines.append("")
+            lines.append(f"        // Test case {i}")
+            lines.append(f"        a = {a_str}; b = {b_str}; opcode = 4'b{op_val};")
+            lines.append(f"        #10;  // Wait for one clock cycle")
+            lines.append(f"        #10;  // Wait for result")
+            lines.append(f"        total = total + 1;")
+            lines.append(f"        if (result == {exp_str}) begin")
+            lines.append(f"            $display(\"✅ Test {i} PASSED: %d op %d = %d\", a, b, result);")
+            lines.append(f"            passed = passed + 1;")
+            lines.append(f"        end else begin")
+            lines.append(f"            $display(\"❌ Test {i} FAILED: %d op %d = %d (expected %d)\", a, b, result, {expected});")
+            lines.append(f"            failed = failed + 1;")
+            lines.append(f"        end")
+            lines.append("")
 
         # Summary
-        lines.append(f'        $display("");')
-        lines.append(f'        $display("========================================");')
-        lines.append(f'        $display("TEST SUMMARY");')
-        lines.append(f'        $display("========================================");')
-        lines.append(f'        $display("Total:  %0d", total);')
-        lines.append(f'        $display("Passed: %0d", passed);')
-        lines.append(f'        $display("Failed: %0d", failed);')
-        lines.append(f'        if (failed == 0)')
-        lines.append(f'            $display("[SUCCESS] All tests passed!");')
-        lines.append(f'        else')
-        lines.append(f'            $display("[FAILURE] Some tests failed!");')
-        lines.append(f'        $display("========================================");')
+        lines.append("        //----------------------------------------------------------------------")
+        lines.append("        // Test Summary")
+        lines.append("        //----------------------------------------------------------------------")
+        lines.append(f"        $display(\"\\n{'='*70}\");")
+        lines.append(f"        $display(\"Test Summary for {llm_name}\");")
+        lines.append(f"        $display(\"{'='*70}\");")
+        lines.append("        $display(\"Total:  %0d\", total);")
+        lines.append("        $display(\"Passed: %0d\", passed);")
+        lines.append("        $display(\"Failed: %0d\", failed);")
         lines.append("")
-        lines.append("        #10;")
+        lines.append("        if (failed == 0) begin")
+        lines.append(f"            $display(\"\\n🎉 ALL TESTS PASSED!\");")
+        lines.append("        end else begin")
+        lines.append(f"            $display(\"\\n⚠️  SOME TESTS FAILED\");")
+        lines.append("        end")
+        lines.append(f"        $display(\"{'='*70}\\n\");")
+        lines.append("")
         lines.append("        $finish;")
         lines.append("    end")
         lines.append("")
-
-        # VCD dump for waveform viewing
-        lines.append("    //--------------------------------------------------------------------------")
-        lines.append("    // VCD Dump for Waveform Viewing")
-        lines.append("    //--------------------------------------------------------------------------")
-        lines.append("    initial begin")
-        lines.append(f'        $dumpfile("{feature_name}_tb.vcd");')
-        lines.append(f"        $dumpvars(0, {feature_name}_tb);")
-        lines.append("    end")
-        lines.append("")
         lines.append("endmodule")
-        lines.append("")
-        lines.append("//==============================================================================")
-        lines.append("// End of Testbench")
-        lines.append("//==============================================================================")
 
         return '\n'.join(lines)
 
-    def generate_all(self) -> List[Path]:
-        """Generate testbenches for all .feature files"""
+    def generate_all(self) -> Dict[str, List[Path]]:
+        """
+        Generate testbenches for all .feature files.
+
+        Returns:
+            Dictionary mapping LLM names to list of generated testbench paths
+        """
         print("\n" + "=" * 70)
-        print("🚀 Testbench Generator - Starting generation")
+        print("🚀 Testbench Generator - Multi-LLM Mode")
         print("=" * 70)
 
+        # Scan for features
         feature_files = self.scan_features()
 
         if not feature_files:
             print("\n❌ No .feature files found. Run bdd_generator.py first.")
-            return []
+            return {}
 
-        generated_files = []
+        generated_by_llm = {}
 
-        for feature_path in feature_files:
+        for feature_path, llm_name in feature_files:
             try:
-                print(f"\n📖 Processing: {feature_path.name}")
+                print(f"\n📖 Processing: {llm_name}/{feature_path.name}")
 
                 # Parse feature file
                 parser = FeatureParser(str(feature_path), debug=self.debug)
@@ -595,15 +613,23 @@ class TestbenchGenerator:
 
                 # Generate testbench
                 feature_name = feature_path.stem
-                tb_content = self.generate_testbench(spec, feature_name)
+                tb_content = self.generate_testbench(spec, feature_name, llm_name)
+
+                # Create LLM-specific output directory
+                llm_output_dir = self.output_base_dir / llm_name
+                llm_output_dir.mkdir(parents=True, exist_ok=True)
 
                 # Save testbench
-                tb_path = self.output_dir / f"{feature_name}_tb.v"
+                tb_path = llm_output_dir / f"{feature_name}_tb.v"
                 with open(tb_path, 'w', encoding='utf-8') as f:
                     f.write(tb_content)
 
-                print(f"   ✅ Generated: {tb_path.name}")
-                generated_files.append(tb_path)
+                print(f"   ✅ Generated: {tb_path.relative_to(self.output_base_dir.parent)}")
+
+                # Track by LLM
+                if llm_name not in generated_by_llm:
+                    generated_by_llm[llm_name] = []
+                generated_by_llm[llm_name].append(tb_path)
 
             except Exception as e:
                 print(f"   ❌ Error: {e}")
@@ -611,13 +637,25 @@ class TestbenchGenerator:
                     import traceback
                     traceback.print_exc()
 
+        # Summary
         print("\n" + "=" * 70)
-        print(f"✨ Generation complete! Created {len(generated_files)} testbench(es)")
+        print(f"✨ Generation Complete!")
         print("=" * 70)
 
-        return generated_files
+        total = sum(len(files) for files in generated_by_llm.values())
+        print(f"\n📊 Summary:")
+        print(f"   Total testbenches: {total}")
+        print(f"   LLM providers: {len(generated_by_llm)}")
+        print()
 
-    def generate_from_feature_file(self, feature_path: Union[str, Path]) -> Path:
+        for llm_name, files in sorted(generated_by_llm.items()):
+            print(f"   📂 {llm_name}: {len(files)} testbench(es)")
+            for f in files:
+                print(f"      • {f.name}")
+
+        return generated_by_llm
+
+    def generate_from_feature_file(self, feature_path: Union[str, Path], llm_name: str = "default") -> Path:
         """Generate testbench from a specific .feature file"""
         feature_path = Path(feature_path)
 
@@ -628,9 +666,13 @@ class TestbenchGenerator:
         spec = parser.parse()
 
         feature_name = feature_path.stem
-        tb_content = self.generate_testbench(spec, feature_name)
+        tb_content = self.generate_testbench(spec, feature_name, llm_name)
 
-        tb_path = self.output_dir / f"{feature_name}_tb.v"
+        # Create LLM-specific output directory
+        llm_output_dir = self.output_base_dir / llm_name
+        llm_output_dir.mkdir(parents=True, exist_ok=True)
+
+        tb_path = llm_output_dir / f"{feature_name}_tb.v"
         with open(tb_path, 'w', encoding='utf-8') as f:
             f.write(tb_content)
 
@@ -641,11 +683,11 @@ class TestbenchGenerator:
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(
-        description='Generate Verilog testbench from BDD .feature files (No LLM)',
+        description='Generate Verilog testbench from BDD .feature files (No LLM) - Multi-LLM Support',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  # Generate from all .feature files in default directory
+  # Generate from all .feature files (including LLM subdirs)
   python testbench_generator.py
 
   # Specify feature directory
@@ -654,38 +696,53 @@ Examples:
   # Specify output directory
   python testbench_generator.py --output-dir ./output/verilog
 
-  # Specify DUT module name explicitly
-  python testbench_generator.py --dut-module alu_16bit
+  # Specify DUT directory
+  python testbench_generator.py --dut-dir ./output/dut
 
   # Process single feature file
-  python testbench_generator.py --feature-file ./output/bdd/alu_16bit.feature
+  python testbench_generator.py --feature-file ./output/bdd/groq/alu_16bit.feature --llm groq
 
   # With project root
-  python testbench_generator.py --project-root D:/DE/HdlFormalVerifierLLM/HdlFormalVerifier/AluBDDVerilog
+  python testbench_generator.py --project-root D:/DE/RQ/MultiLLM_BDD_Comparison/HdlFormalVerifier
 
-Note: This generator creates ONLY testbench files.
-ALU design is generated by alu_generator.py separately.
+DIRECTORY STRUCTURE:
+  This generator supports multi-LLM organization:
+  
+  Input:
+    output/bdd/
+    ├── groq/
+    │   └── alu_16bit.feature
+    ├── deepseek/
+    │   └── alu_16bit.feature
+    └── openai/
+        └── alu_16bit.feature
 
-Output Structure:
-  output/
-  ├── bdd/
-  │   └── *.feature      ← Input (from bdd_generator)
-  └── verilog/
-      ├── alu_16bit.v    ← DUT (from alu_generator)
-      └── *_tb.v         ← Testbench (from this file)
+  Output:
+    output/verilog/
+    ├── groq/
+    │   └── alu_16bit_tb.v       → tests output/dut/alu_16bit.v
+    ├── deepseek/
+    │   └── alu_16bit_tb.v       → tests output/dut/alu_16bit.v
+    └── openai/
+        └── alu_16bit_tb.v       → tests output/dut/alu_16bit.v
 
-Simulation:
-  iverilog -o sim output/verilog/alu_16bit.v output/verilog/*_tb.v
+  All testbenches test the SAME fixed DUT in output/dut/
+
+SIMULATION:
+  cd output/verilog/groq
+  iverilog -o sim ../../dut/alu_16bit.v alu_16bit_tb.v
   vvp sim
   gtkwave *.vcd
         '''
     )
 
-    parser.add_argument('--feature-dir', help='Directory containing .feature files')
+    parser.add_argument('--feature-dir', help='Directory containing .feature files (supports LLM subdirs)')
     parser.add_argument('--feature-file', help='Specific .feature file to process')
-    parser.add_argument('--output-dir', help='Output directory for testbench files')
+    parser.add_argument('--output-dir', help='Base output directory for testbench files')
+    parser.add_argument('--dut-dir', help='Directory containing DUT .v files (default: output/dut)')
     parser.add_argument('--project-root', help='Project root directory')
     parser.add_argument('--dut-module', help='DUT module name (auto-detected if not specified)')
+    parser.add_argument('--llm', help='LLM provider name (for single file mode)')
     parser.add_argument('--debug', action='store_true', default=True, help='Enable debug output')
 
     args = parser.parse_args()
@@ -694,6 +751,7 @@ Simulation:
     generator = TestbenchGenerator(
         feature_dir=args.feature_dir,
         output_dir=args.output_dir,
+        dut_dir=args.dut_dir,
         project_root=args.project_root,
         dut_module_name=args.dut_module,
         debug=args.debug
@@ -702,26 +760,33 @@ Simulation:
     # Generate
     if args.feature_file:
         # Single file mode
-        tb_path = generator.generate_from_feature_file(args.feature_file)
+        llm_name = args.llm or "default"
+        tb_path = generator.generate_from_feature_file(args.feature_file, llm_name)
         print(f"\n📄 Generated: {tb_path}")
     else:
-        # Batch mode
-        generated = generator.generate_all()
+        # Batch mode (multi-LLM)
+        generated_by_llm = generator.generate_all()
 
-        if generated:
-            print("\n📋 Generated files:")
-            for path in generated:
-                print(f"   • {path}")
-
+        if generated_by_llm:
             # Show next steps
-            dut_module = generator._detect_dut_module()
             print("\n📋 NEXT STEPS:")
             print("=" * 70)
-            print(f"1. Ensure DUT exists: {generator.output_dir}/{dut_module}.v")
-            print(f"2. Compile:  iverilog -o sim {dut_module}.v *_tb.v")
-            print(f"3. Simulate: vvp sim")
-            print(f"4. Waveform: gtkwave *.vcd")
-            print("=" * 70)
+
+            dut_module = generator._detect_dut_module()
+            dut_path = generator.dut_dir / f"{dut_module}.v"
+
+            print(f"1. Ensure DUT exists: {dut_path}")
+            print(f"\n2. Run simulations for each LLM:")
+
+            for llm_name in sorted(generated_by_llm.keys()):
+                llm_dir = generator.output_base_dir / llm_name
+                print(f"\n   📂 {llm_name}:")
+                print(f"      cd {llm_dir}")
+                print(f"      iverilog -o sim ../../dut/{dut_module}.v *_tb.v")
+                print(f"      vvp sim")
+                print(f"      gtkwave *.vcd")
+
+            print("\n" + "=" * 70)
 
 
 if __name__ == "__main__":

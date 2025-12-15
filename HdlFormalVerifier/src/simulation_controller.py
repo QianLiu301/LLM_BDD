@@ -1,126 +1,234 @@
 #!/usr/bin/env python3
 """
-Simulation Controller - Run Verilog simulations with iverilog/vvp
-=================================================================
+Simulation Runner - Multi-Bitwidth & Multi-LLM Support
+======================================================
 
-This module scans for ALU design files and their corresponding testbenches,
-compiles and runs simulations, and optionally opens waveform viewer.
+ENHANCED VERSION: Automatically matches testbench bitwidth with corresponding DUT
 
-ARCHITECTURE:
-    output/verilog/
-    ├── alu_8bit.v       ──┐
-    ├── alu_8bit_tb.v    ──┼──► iverilog ──► vvp ──► output/simulation/
-    ├── alu_16bit.v      ──┤
-    ├── alu_16bit_tb.v   ──┤
-    └── ...              ──┘
+Features:
+- ✅ Auto-detects bitwidth from testbench filename
+- ✅ Auto-matches to correct DUT (alu_8bit.v, alu_16bit.v, etc.)
+- ✅ Ignores metadata .json files
+- ✅ Supports multiple bitwidths in single run
+- ✅ Multi-LLM comparison
 
-KEY FEATURES:
-- Automatically pairs DUT with its corresponding testbench
-- Supports multiple bitwidth ALUs (8, 16, 32, 64 bit)
-- Generates VCD waveform files for GTKWave
-- Interactive VCD file selection
-- Cross-platform path handling
-
-NO LLM REQUIRED - This is a deterministic simulation runner.
+Example:
+    testbench: alu_16bit_20251209_132949_tb.v → DUT: alu_16bit.v
+    testbench: alu_32bit_20251210_143050_tb.v → DUT: alu_32bit.v
 """
 
+import argparse
 import subprocess
 import sys
-import argparse
 import re
+import json
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
 from datetime import datetime
 
 
-class SimulationController:
-    """
-    Controller for running Verilog simulations.
+class SimulationResult:
+    """Container for simulation results"""
 
-    Scans for DUT and testbench pairs, compiles with iverilog,
-    runs with vvp, and optionally opens GTKWave for waveform viewing.
+    def __init__(self, llm_name: str, testbench_name: str, bitwidth: int):
+        self.llm_name = llm_name
+        self.testbench_name = testbench_name
+        self.bitwidth = bitwidth
+        self.dut_file = None
+        self.success = False
+        self.total_tests = 0
+        self.passed_tests = 0
+        self.failed_tests = 0
+        self.simulation_log = ""
+        self.vcd_file = None
+        self.compile_time = 0.0
+        self.sim_time = 0.0
+
+    @property
+    def pass_rate(self) -> float:
+        """Calculate pass rate percentage"""
+        if self.total_tests == 0:
+            return 0.0
+        return (self.passed_tests / self.total_tests) * 100
+
+    def to_dict(self) -> Dict:
+        """Convert to dictionary for JSON serialization"""
+        return {
+            "llm_name": self.llm_name,
+            "testbench_name": self.testbench_name,
+            "bitwidth": self.bitwidth,
+            "dut_file": str(self.dut_file) if self.dut_file else None,
+            "success": self.success,
+            "total_tests": self.total_tests,
+            "passed_tests": self.passed_tests,
+            "failed_tests": self.failed_tests,
+            "pass_rate": self.pass_rate,
+            "compile_time": self.compile_time,
+            "sim_time": self.sim_time,
+        }
+
+
+class SimulationRunner:
+    """
+    Multi-Bitwidth & Multi-LLM simulation runner.
+
+    Automatically matches testbench bitwidth with corresponding DUT.
     """
 
     def __init__(
             self,
-            verilog_dir: Optional[str] = None,
-            output_dir: Optional[str] = None,
+            verilog_base_dir: Optional[str] = None,
+            dut_dir: Optional[str] = None,
+            results_dir: Optional[str] = None,
             project_root: Optional[str] = None,
             debug: bool = True
     ):
-        """
-        Initialize the simulation controller.
-
-        Args:
-            verilog_dir: Directory containing .v and *_tb.v files
-            output_dir: Directory for simulation output (.vvp, .vcd files)
-            project_root: Project root directory for path resolution
-            debug: Enable debug output
-        """
         self.debug = debug
         self.project_root = Path(project_root) if project_root else None
 
         # Setup paths
-        self.verilog_dir = self._find_verilog_dir(verilog_dir)
-        self.output_dir = self._setup_output_dir(output_dir)
+        self.verilog_base_dir = self._find_verilog_base_dir(verilog_base_dir)
+        self.dut_dir = self._find_dut_dir(dut_dir)
+        self.results_base_dir = self._setup_results_dir(results_dir)
+
+        # Cache available DUTs
+        self.available_duts = self._scan_available_duts()
 
         print("=" * 70)
-        print("Simulation Controller")
+        print("🔬 Multi-Bitwidth & Multi-LLM Simulation Runner")
         print("=" * 70)
-        print(f"📁 Verilog directory: {self.verilog_dir}")
-        print(f"📁 Output directory:  {self.output_dir}")
+        print(f"📁 Verilog base directory: {self.verilog_base_dir}")
+        print(f"📁 DUT directory:          {self.dut_dir}")
+        print(f"📁 Results directory:      {self.results_base_dir}")
 
-    def _find_verilog_dir(self, verilog_dir: Optional[str]) -> Path:
-        """Find Verilog source directory"""
-        # 1. Explicit specification
+        if self.available_duts:
+            print(f"\n🔍 Available DUTs:")
+            for bitwidth, dut_file in sorted(self.available_duts.items()):
+                print(f"   • {bitwidth}-bit: {dut_file.name}")
+
+    def _find_verilog_base_dir(self, verilog_dir: Optional[str]) -> Path:
+        """Find base verilog directory containing LLM subdirs"""
         if verilog_dir:
             path = Path(verilog_dir)
             if path.exists():
                 return path
-            print(f"⚠️  Specified verilog_dir not found: {verilog_dir}")
 
-        # 2. Project root based
         if self.project_root:
             path = self.project_root / "output" / "verilog"
             if path.exists():
                 return path
 
-        # 3. Search common locations
         current = Path.cwd()
         search_paths = [
             current / "output" / "verilog",
             current / "verilog",
             current.parent / "output" / "verilog",
-            current / "src" / "output" / "verilog",
         ]
 
         for path in search_paths:
             if path.exists():
-                self._debug_print(f"Found verilog at: {path}", "SUCCESS")
                 return path
 
-        # 4. Fallback to absolute path (Windows)
-        fallback_path = Path(r"D:\DE\RQ\MultiLLM_BDD_Comparison\HdlFormalVerifier\output\verilog")
-        if fallback_path.exists():
-            return fallback_path
-
-        # 5. Create default
         default = current / "output" / "verilog"
-        print(f"⚠️  No verilog directory found. Please specify with --verilog-dir")
+        default.mkdir(parents=True, exist_ok=True)
         return default
 
-    def _setup_output_dir(self, output_dir: Optional[str]) -> Path:
-        """Setup output directory for simulation results"""
-        if output_dir:
-            path = Path(output_dir)
+    def _find_dut_dir(self, dut_dir: Optional[str]) -> Path:
+        """Find DUT directory"""
+        if dut_dir:
+            path = Path(dut_dir)
+            if path.exists():
+                return path
+
+        if self.project_root:
+            path = self.project_root / "output" / "dut"
+            if path.exists():
+                return path
+
+        current = Path.cwd()
+        search_paths = [
+            current / "output" / "dut",
+            current / "dut",
+            current.parent / "output" / "dut",
+        ]
+
+        for path in search_paths:
+            if path.exists():
+                return path
+
+        default = current / "output" / "dut"
+        default.mkdir(parents=True, exist_ok=True)
+        return default
+
+    def _setup_results_dir(self, results_dir: Optional[str]) -> Path:
+        """Setup results directory"""
+        if results_dir:
+            path = Path(results_dir)
         elif self.project_root:
-            path = self.project_root / "output" / "simulation"
+            path = self.project_root / "output" / "results"
         else:
-            # Same level as verilog directory
-            path = self.verilog_dir.parent / "simulation"
+            path = self.verilog_base_dir.parent / "results"
 
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    def _scan_available_duts(self) -> Dict[int, Path]:
+        """
+        Scan DUT directory for available ALU files.
+
+        Returns:
+            Dictionary mapping bitwidth to DUT file path
+        """
+        duts = {}
+
+        # Look for alu_<bitwidth>bit.v files
+        for v_file in self.dut_dir.glob("alu_*bit.v"):
+            # Extract bitwidth from filename
+            match = re.search(r'alu_(\d+)bit\.v', v_file.name)
+            if match:
+                bitwidth = int(match.group(1))
+                duts[bitwidth] = v_file
+
+        return duts
+
+    def _extract_bitwidth_from_testbench(self, tb_file: Path) -> Optional[int]:
+        """
+        Extract bitwidth from testbench filename.
+
+        Args:
+            tb_file: Testbench file path
+
+        Returns:
+            Bitwidth as integer, or None if not found
+        """
+        # Pattern: alu_16bit_20251209_132949_tb.v
+        match = re.search(r'alu_(\d+)bit', tb_file.name)
+        if match:
+            return int(match.group(1))
+
+        # Also check inside the file if not in filename
+        try:
+            with open(tb_file, 'r', encoding='utf-8') as f:
+                content = f.read(1000)  # Read first 1000 chars
+                match = re.search(r'(\d+)[-_]bit', content, re.IGNORECASE)
+                if match:
+                    return int(match.group(1))
+        except:
+            pass
+
+        return None
+
+    def _find_dut_for_bitwidth(self, bitwidth: int) -> Optional[Path]:
+        """
+        Find DUT file for given bitwidth.
+
+        Args:
+            bitwidth: ALU bitwidth
+
+        Returns:
+            Path to DUT file or None
+        """
+        return self.available_duts.get(bitwidth)
 
     def _debug_print(self, message: str, level: str = "INFO"):
         """Debug output"""
@@ -135,14 +243,10 @@ class SimulationController:
         print(f"   {icon} [{level}] {message}")
 
     def check_tools(self) -> Dict[str, bool]:
-        """Check whether required tools are installed"""
+        """Check if required simulation tools are installed"""
         print("\n🔧 Checking simulation tools...")
 
-        tools = {
-            "iverilog": False,
-            "vvp": False,
-            "gtkwave": False,
-        }
+        tools = {}
 
         # Check iverilog
         try:
@@ -150,15 +254,17 @@ class SimulationController:
                 ["iverilog", "-V"],
                 capture_output=True,
                 text=True,
-                timeout=5,
+                encoding='utf-8',
+                errors='replace',
+                timeout=5
             )
-            if result.returncode == 0:
-                tools["iverilog"] = True
-                version = result.stdout.split("\n")[0]
-                tools["iverilog_version"] = version
+            tools["iverilog"] = result.returncode == 0
+            if tools["iverilog"]:
+                version = result.stderr.split('\n')[0] if result.stderr else "unknown"
                 print(f"   ✅ iverilog: {version}")
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            print("   ❌ iverilog: not found")
+        except:
+            tools["iverilog"] = False
+            print(f"   ❌ iverilog: Not found")
 
         # Check vvp
         try:
@@ -166,506 +272,351 @@ class SimulationController:
                 ["vvp", "-V"],
                 capture_output=True,
                 text=True,
-                timeout=5,
+                encoding='utf-8',
+                errors='replace',
+                timeout=5
             )
-            if result.returncode == 0:
-                tools["vvp"] = True
-                print("   ✅ vvp: installed")
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            print("   ❌ vvp: not found")
+            tools["vvp"] = result.returncode == 0
+            if tools["vvp"]:
+                print(f"   ✅ vvp: Available")
+        except:
+            tools["vvp"] = False
+            print(f"   ❌ vvp: Not found")
 
-        # Check gtkwave
+        # Check gtkwave (optional)
         try:
-            result = subprocess.run(
+            subprocess.run(
                 ["gtkwave", "--version"],
                 capture_output=True,
-                text=True,
-                timeout=5,
+                timeout=5
             )
             tools["gtkwave"] = True
-            print("   ✅ gtkwave: installed")
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            print("   ⚠️  gtkwave: not found (waveform viewing disabled)")
+            print(f"   ✅ gtkwave: Available (optional)")
+        except:
+            tools["gtkwave"] = False
+            print(f"   ⚠️  gtkwave: Not found (optional, for waveform viewing)")
 
         return tools
 
-    def find_dut_testbench_pairs(self) -> List[Tuple[Path, Path]]:
+    def scan_llm_testbenches(self) -> Dict[str, List[Tuple[Path, int]]]:
         """
-        Find matching DUT and testbench file pairs.
-
-        Matching logic:
-            alu_8bit.v  ↔ alu_8bit_tb.v
-            alu_16bit.v ↔ alu_16bit_tb.v
-            etc.
+        Scan for testbenches organized by LLM provider.
 
         Returns:
-            List of (dut_file, testbench_file) tuples
+            Dictionary mapping LLM name to list of (testbench_file, bitwidth) tuples
         """
-        print(f"\n🔍 Scanning for Verilog files in: {self.verilog_dir}")
+        print(f"\n🔍 Scanning for LLM testbenches...")
 
-        if not self.verilog_dir.exists():
-            print(f"   ❌ Directory not found: {self.verilog_dir}")
-            return []
+        llm_testbenches = {}
 
-        # Find all .v files
-        all_v_files = list(self.verilog_dir.glob("*.v"))
+        # Check root directory
+        for tb in self.verilog_base_dir.glob("*_tb.v"):
+            bitwidth = self._extract_bitwidth_from_testbench(tb)
+            if bitwidth:
+                if "default" not in llm_testbenches:
+                    llm_testbenches["default"] = []
+                llm_testbenches["default"].append((tb, bitwidth))
 
-        # Classify files
-        testbench_files: Dict[str, Path] = {}  # base_name -> tb_file
-        design_files: Dict[str, Path] = {}  # base_name -> dut_file
+        # Check LLM subdirectories
+        for subdir in self.verilog_base_dir.iterdir():
+            if subdir.is_dir():
+                llm_name = subdir.name
+                tbs = []
+                for tb in subdir.glob("*_tb.v"):
+                    bitwidth = self._extract_bitwidth_from_testbench(tb)
+                    if bitwidth:
+                        tbs.append((tb, bitwidth))
 
-        for v_file in all_v_files:
-            name = v_file.stem  # filename without extension
+                if tbs:
+                    llm_testbenches[llm_name] = tbs
 
-            # Check if it's a testbench file
-            if name.endswith("_tb"):
-                # Extract base name: alu_8bit_tb -> alu_8bit
-                base_name = name[:-3]
-                testbench_files[base_name] = v_file
-            elif "_tb" not in name and "test" not in name.lower():
-                # It's a design file
-                design_files[name] = v_file
+        if not llm_testbenches:
+            print(f"   ⚠️  No testbenches found")
+            return {}
 
-        # Match pairs
-        pairs: List[Tuple[Path, Path]] = []
+        print(f"   ✅ Found testbenches from {len(llm_testbenches)} LLM(s):")
+        for llm_name, tbs in sorted(llm_testbenches.items()):
+            # Group by bitwidth
+            by_bitwidth = {}
+            for tb, bw in tbs:
+                if bw not in by_bitwidth:
+                    by_bitwidth[bw] = []
+                by_bitwidth[bw].append(tb)
 
-        print(f"\n📋 Found files:")
-        print(f"   Design files:    {len(design_files)}")
-        print(f"   Testbench files: {len(testbench_files)}")
+            print(f"      📂 {llm_name}: {len(tbs)} testbench(es)")
+            for bw, files in sorted(by_bitwidth.items()):
+                dut = self._find_dut_for_bitwidth(bw)
+                status = "✅" if dut else "❌"
+                print(f"         {status} {bw}-bit: {len(files)} testbench(es)")
 
-        print(f"\n🔗 Matching DUT ↔ Testbench pairs:")
+        return llm_testbenches
 
-        for base_name, dut_file in sorted(design_files.items()):
-            if base_name in testbench_files:
-                tb_file = testbench_files[base_name]
-                pairs.append((dut_file, tb_file))
-                print(f"   ✅ {dut_file.name} ↔ {tb_file.name}")
-            else:
-                print(f"   ⚠️  {dut_file.name} (no matching testbench)")
-
-        # Check for orphan testbenches
-        for base_name, tb_file in testbench_files.items():
-            if base_name not in design_files:
-                print(f"   ⚠️  {tb_file.name} (no matching DUT)")
-
-        return pairs
-
-    def compile_verilog(self, dut_file: Path, tb_file: Path) -> Optional[Path]:
+    def compile_and_run(
+            self,
+            llm_name: str,
+            testbench_file: Path,
+            bitwidth: int
+    ) -> SimulationResult:
         """
-        Compile a DUT + testbench pair.
+        Compile and run simulation for one testbench.
 
         Args:
-            dut_file: Path to DUT file (e.g., alu_8bit.v)
-            tb_file: Path to testbench file (e.g., alu_8bit_tb.v)
+            llm_name: Name of LLM provider
+            testbench_file: Path to testbench .v file
+            bitwidth: ALU bitwidth
 
         Returns:
-            Path to compiled .vvp file, or None if compilation failed
+            SimulationResult object
         """
-        # Output filename based on testbench
-        output_vvp = self.output_dir / f"{tb_file.stem}.vvp"
+        result = SimulationResult(llm_name, testbench_file.stem, bitwidth)
 
-        # Build compile command
+        # Find matching DUT
+        dut_file = self._find_dut_for_bitwidth(bitwidth)
+        if not dut_file:
+            print(f"      ❌ No DUT found for {bitwidth}-bit")
+            print(f"      Expected: {self.dut_dir}/alu_{bitwidth}bit.v")
+            return result
+
+        result.dut_file = dut_file
+
+        # Create LLM-specific results directory
+        llm_results_dir = self.results_base_dir / llm_name
+        llm_results_dir.mkdir(parents=True, exist_ok=True)
+
+        # Output files
+        vvp_file = llm_results_dir / f"{testbench_file.stem}.vvp"
+        log_file = llm_results_dir / "simulation.log"
+
+        # Step 1: Compile
+        print(f"\n   📦 Compiling: {testbench_file.name}")
+        print(f"      DUT: {dut_file.name}")
+
         compile_cmd = [
             "iverilog",
-            "-g2012",  # SystemVerilog 2012 support
-            "-o", str(output_vvp),
-            str(dut_file),  # DUT first
-            str(tb_file),  # Testbench second
+            "-g2012",
+            "-o", str(vvp_file),
+            str(dut_file),
+            str(testbench_file),
         ]
 
-        print(f"\n📦 Compiling: {dut_file.name} + {tb_file.name}")
         self._debug_print(f"Command: {' '.join(compile_cmd)}", "DEBUG")
 
         try:
-            result = subprocess.run(
+            import time
+            start_time = time.time()
+
+            compile_result = subprocess.run(
                 compile_cmd,
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 timeout=30,
             )
 
-            if result.returncode == 0:
-                print(f"   ✅ Compiled: {output_vvp.name}")
-                if result.stderr:
-                    # iverilog warnings go to stderr
-                    warnings = result.stderr.strip()
-                    if warnings:
-                        print(f"   ⚠️  Warnings:\n{warnings}")
-                return output_vvp
-            else:
-                print(f"   ❌ Compilation failed")
-                print(f"   Error:\n{result.stderr}")
-                return None
+            result.compile_time = time.time() - start_time
 
-        except subprocess.TimeoutExpired:
-            print("   ❌ Compilation timeout")
-            return None
-        except FileNotFoundError:
-            print("   ❌ iverilog not found. Please install Icarus Verilog.")
-            return None
+            if compile_result.returncode != 0:
+                print(f"      ❌ Compilation failed")
+                print(f"      Error: {compile_result.stderr}")
+                return result
+
+            print(f"      ✅ Compiled ({result.compile_time:.2f}s)")
+
         except Exception as e:
-            print(f"   ❌ Exception: {e}")
-            return None
+            print(f"      ❌ Compilation error: {e}")
+            return result
 
-    def run_simulation(self, vvp_file: Path) -> Tuple[bool, Optional[Path]]:
-        """
-        Run simulation using vvp.
-
-        Args:
-            vvp_file: Path to compiled .vvp file
-
-        Returns:
-            (success, vcd_file_path)
-        """
-        if not vvp_file.exists():
-            print(f"   ❌ VVP file not found: {vvp_file}")
-            return False, None
-
-        print(f"\n🚀 Running simulation: {vvp_file.name}")
+        # Step 2: Run simulation
+        print(f"   🚀 Running simulation...")
 
         try:
-            result = subprocess.run(
+            start_time = time.time()
+
+            sim_result = subprocess.run(
                 ["vvp", str(vvp_file)],
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 timeout=60,
-                cwd=str(self.output_dir),  # Run in output dir so VCD goes there
+                cwd=str(llm_results_dir),
             )
 
-            if result.returncode == 0:
-                print("   ✅ Simulation completed")
-                print("\n" + "─" * 60)
-                print("SIMULATION OUTPUT:")
-                print("─" * 60)
-                print(result.stdout)
-                print("─" * 60)
+            result.sim_time = time.time() - start_time
 
-                # Find generated VCD file
-                vcd_name = vvp_file.stem.replace("_tb", "") + "_tb.vcd"
-                vcd_file = self.output_dir / vcd_name
+            if sim_result.returncode == 0:
+                result.success = True
+                result.simulation_log = sim_result.stdout
 
-                # Also check for alternative VCD names
-                if not vcd_file.exists():
-                    vcd_files = list(self.output_dir.glob("*.vcd"))
-                    # Get most recently modified
-                    if vcd_files:
-                        vcd_file = max(vcd_files, key=lambda f: f.stat().st_mtime)
+                # Parse results from output
+                self._parse_simulation_output(result, sim_result.stdout)
 
-                if vcd_file.exists():
-                    print(f"\n   📊 VCD waveform: {vcd_file.name}")
-                    return True, vcd_file
-                else:
-                    print(f"\n   ⚠️  No VCD file generated")
-                    return True, None
+                # Save log
+                with open(log_file, 'w', encoding='utf-8') as f:
+                    f.write(sim_result.stdout)
+
+                # Find VCD file
+                vcd_files = list(llm_results_dir.glob("*.vcd"))
+                if vcd_files:
+                    result.vcd_file = vcd_files[0]
+
+                print(f"      ✅ Simulation completed ({result.sim_time:.2f}s)")
+                print(f"      📊 Results: {result.passed_tests}/{result.total_tests} passed")
+
             else:
-                print(f"   ❌ Simulation failed")
-                print(f"   Error:\n{result.stderr}")
-                return False, None
+                print(f"      ❌ Simulation failed")
+                print(f"      Error: {sim_result.stderr}")
 
-        except subprocess.TimeoutExpired:
-            print("   ❌ Simulation timeout (>60s)")
-            return False, None
-        except FileNotFoundError:
-            print("   ❌ vvp not found")
-            return False, None
         except Exception as e:
-            print(f"   ❌ Exception: {e}")
-            return False, None
+            print(f"      ❌ Simulation error: {e}")
 
-    def open_gtkwave(self, vcd_file: Path) -> bool:
-        """Open a VCD file in GTKWave"""
-        try:
-            print(f"\n🌊 Opening waveform: {vcd_file.name}")
-            subprocess.Popen(["gtkwave", str(vcd_file)])
-            return True
-        except FileNotFoundError:
-            print("   ❌ GTKWave not found")
-            return False
-        except Exception as e:
-            print(f"   ❌ Error: {e}")
-            return False
+        return result
 
-    def interactive_vcd_selection(self, vcd_files: List[Path]) -> Optional[Path]:
+    def _parse_simulation_output(self, result: SimulationResult, output: str):
+        """Parse test statistics from simulation output"""
+        total_match = re.search(r'Total:\s*(\d+)', output)
+        passed_match = re.search(r'Passed:\s*(\d+)', output)
+        failed_match = re.search(r'Failed:\s*(\d+)', output)
+
+        if total_match:
+            result.total_tests = int(total_match.group(1))
+        if passed_match:
+            result.passed_tests = int(passed_match.group(1))
+        if failed_match:
+            result.failed_tests = int(failed_match.group(1))
+
+        if result.total_tests == 0:
+            passed_count = len(re.findall(r'PASSED', output, re.IGNORECASE))
+            failed_count = len(re.findall(r'FAILED', output, re.IGNORECASE))
+            result.passed_tests = passed_count
+            result.failed_tests = failed_count
+            result.total_tests = passed_count + failed_count
+
+    def run_all_simulations(self) -> Dict[str, List[SimulationResult]]:
         """
-        Interactive VCD file selection menu.
-
-        Args:
-            vcd_files: List of available VCD files
+        Run simulations for all LLM providers and all bitwidths.
 
         Returns:
-            Selected VCD file path, or None if cancelled
-        """
-        if not vcd_files:
-            print("\n⚠️  No VCD files available")
-            return None
-
-        print("\n" + "=" * 60)
-        print("📊 Available VCD Waveform Files:")
-        print("=" * 60)
-
-        for i, vcd in enumerate(vcd_files, 1):
-            size_kb = vcd.stat().st_size / 1024
-            print(f"  {i}. {vcd.name} ({size_kb:.1f} KB)")
-
-        print(f"  A. Open ALL files")
-        print(f"  0. Skip / Cancel")
-        print("=" * 60)
-
-        try:
-            choice = input("\nSelect file to open [1]: ").strip().upper()
-
-            if not choice:
-                choice = "1"
-
-            if choice == "0":
-                print("   Skipped.")
-                return None
-
-            if choice == "A":
-                for vcd in vcd_files:
-                    self.open_gtkwave(vcd)
-                return vcd_files[0] if vcd_files else None
-
-            try:
-                index = int(choice) - 1
-                if 0 <= index < len(vcd_files):
-                    selected = vcd_files[index]
-                    self.open_gtkwave(selected)
-                    return selected
-                else:
-                    print(f"   Invalid selection: {choice}")
-                    return None
-            except ValueError:
-                print(f"   Invalid input: {choice}")
-                return None
-
-        except KeyboardInterrupt:
-            print("\n   Cancelled.")
-            return None
-
-    def run_all_simulations(self, auto_wave: str = "prompt") -> bool:
-        """
-        Run complete simulation flow for all DUT/testbench pairs.
-
-        Args:
-            auto_wave: How to handle waveform viewing
-                - "no": Don't open GTKWave
-                - "prompt": Ask user which to open
-                - "all": Open all VCD files
-                - "first": Open first VCD file only
-
-        Returns:
-            True if at least one simulation succeeded
+            Dictionary mapping LLM name to list of results
         """
         print("\n" + "=" * 70)
-        print("🔬 SIMULATION FLOW")
+        print("🚀 Starting Multi-Bitwidth Multi-LLM Simulation Campaign")
         print("=" * 70)
 
-        # 1. Check tools
+        # Check tools
         tools = self.check_tools()
+        if not tools.get("iverilog") or not tools.get("vvp"):
+            print("\n❌ Required tools not installed!")
+            return {}
 
-        if not tools["iverilog"] or not tools["vvp"]:
-            print("\n❌ Required tools not installed. Please install Icarus Verilog.")
-            print("   Windows: Download from http://bleyer.org/icarus/")
-            print("   Linux:   sudo apt install iverilog")
-            print("   macOS:   brew install icarus-verilog")
-            return False
+        # Scan testbenches
+        llm_testbenches = self.scan_llm_testbenches()
+        if not llm_testbenches:
+            print("\n❌ No testbenches found!")
+            return {}
 
-        # 2. Find DUT + testbench pairs
-        pairs = self.find_dut_testbench_pairs()
+        # Run simulations for each LLM
+        all_results = {}
 
-        if not pairs:
-            print("\n❌ No matching DUT/testbench pairs found")
-            return False
+        for llm_name, testbenches in sorted(llm_testbenches.items()):
+            print(f"\n{'=' * 70}")
+            print(f"📂 LLM Provider: {llm_name}")
+            print(f"{'=' * 70}")
 
-        # 3. Compile and simulate each pair
-        results = []
-        vcd_files = []
+            llm_results = []
 
-        for i, (dut_file, tb_file) in enumerate(pairs, 1):
-            print(f"\n{'─' * 70}")
-            print(f"📋 Test {i}/{len(pairs)}: {dut_file.stem}")
-            print(f"{'─' * 70}")
+            for i, (tb_file, bitwidth) in enumerate(testbenches, 1):
+                print(f"\n📋 Testbench {i}/{len(testbenches)}: {tb_file.name}")
 
-            # Compile
-            vvp_file = self.compile_verilog(dut_file, tb_file)
-            if vvp_file is None:
-                results.append((dut_file.stem, False, "Compilation failed"))
-                continue
+                result = self.compile_and_run(llm_name, tb_file, bitwidth)
+                llm_results.append(result)
 
-            # Simulate
-            success, vcd_file = self.run_simulation(vvp_file)
+                # Save individual result
+                result_json = self.results_base_dir / llm_name / f"{tb_file.stem}_result.json"
+                with open(result_json, 'w', encoding='utf-8') as f:
+                    json.dump(result.to_dict(), f, indent=2)
 
-            if success:
-                results.append((dut_file.stem, True, "PASS"))
-                if vcd_file:
-                    vcd_files.append(vcd_file)
-            else:
-                results.append((dut_file.stem, False, "Simulation failed"))
+            all_results[llm_name] = llm_results
 
-        # 4. Summary
-        print("\n" + "=" * 70)
-        print("📊 SIMULATION SUMMARY")
-        print("=" * 70)
+        return all_results
 
-        passed = sum(1 for _, success, _ in results if success)
-        failed = len(results) - passed
+    def generate_comparison_report(self, all_results: Dict[str, List[SimulationResult]]):
+        """Generate comparison report across all LLMs"""
+        report_file = self.results_base_dir / "comparison_report.txt"
 
-        print(f"\n   Total:  {len(results)}")
-        print(f"   Passed: {passed} ✅")
-        print(f"   Failed: {failed} {'❌' if failed > 0 else ''}")
+        lines = []
+        lines.append("=" * 80)
+        lines.append(" Multi-Bitwidth Multi-LLM Testbench Quality Comparison Report")
+        lines.append("=" * 80)
+        lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append("")
 
-        print(f"\n   Results:")
-        for name, success, msg in results:
-            icon = "✅" if success else "❌"
-            print(f"      {icon} {name}: {msg}")
+        # Summary table
+        lines.append("=" * 80)
+        lines.append(" Summary Statistics")
+        lines.append("=" * 80)
+        lines.append(
+            f"{'LLM Provider':<15} {'Bitwidth':<10} {'Tests':<8} {'Passed':<8} {'Failed':<8} {'Pass Rate':<10}")
+        lines.append("-" * 80)
 
-        # 5. Output files
-        print(f"\n📁 Output directory: {self.output_dir}")
+        for llm_name, results in sorted(all_results.items()):
+            # Group by bitwidth
+            by_bitwidth = {}
+            for r in results:
+                if r.bitwidth not in by_bitwidth:
+                    by_bitwidth[r.bitwidth] = []
+                by_bitwidth[r.bitwidth].append(r)
 
-        vvp_files = list(self.output_dir.glob("*.vvp"))
-        all_vcd_files = list(self.output_dir.glob("*.vcd"))
+            for bitwidth, bw_results in sorted(by_bitwidth.items()):
+                total_tests = sum(r.total_tests for r in bw_results)
+                total_passed = sum(r.passed_tests for r in bw_results)
+                total_failed = sum(r.failed_tests for r in bw_results)
+                pass_rate = (total_passed / total_tests * 100) if total_tests > 0 else 0
 
-        if vvp_files:
-            print(f"\n   Compiled simulations (.vvp):")
-            for f in vvp_files:
-                print(f"      • {f.name}")
+                lines.append(
+                    f"{llm_name:<15} {bitwidth:<10} {total_tests:<8} {total_passed:<8} {total_failed:<8} {pass_rate:>9.1f}%")
 
-        if all_vcd_files:
-            print(f"\n   Waveform files (.vcd):")
-            for f in all_vcd_files:
-                size_kb = f.stat().st_size / 1024
-                print(f"      • {f.name} ({size_kb:.1f} KB)")
+        lines.append("")
 
-        # 6. Waveform viewing
-        if passed > 0 and tools.get("gtkwave") and all_vcd_files:
-            if auto_wave == "all":
-                print("\n🌊 Opening all waveforms...")
-                for vcd in all_vcd_files:
-                    self.open_gtkwave(vcd)
-            elif auto_wave == "first":
-                self.open_gtkwave(all_vcd_files[0])
-            elif auto_wave == "prompt":
-                self.interactive_vcd_selection(all_vcd_files)
-            # else: "no" - don't open
+        # Write and display report
+        report_content = '\n'.join(lines)
+        with open(report_file, 'w', encoding='utf-8') as f:
+            f.write(report_content)
 
-        print("\n" + "=" * 70)
-        if passed == len(results):
-            print("✨ All simulations completed successfully!")
-        elif passed > 0:
-            print(f"⚠️  {passed}/{len(results)} simulations passed")
-        else:
-            print("❌ All simulations failed")
-        print("=" * 70)
-
-        return passed > 0
+        print("\n" + report_content)
+        print(f"\n📄 Report saved to: {report_file}")
 
 
 def main():
-    """Main entry point"""
     parser = argparse.ArgumentParser(
-        description='Verilog Simulation Controller - Compile and run ALU testbenches',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='''
-Examples:
-  # Run with default paths
-  python simulation_controller.py
-
-  # Specify directories
-  python simulation_controller.py --verilog-dir ./output/verilog --output-dir ./output/simulation
-
-  # Auto-open all waveforms
-  python simulation_controller.py --open-wave all
-
-  # Don't open waveforms
-  python simulation_controller.py --open-wave no
-
-  # With project root
-  python simulation_controller.py --project-root D:/DE/HdlFormalVerifierLLM/HdlFormalVerifier/AluBDDVerilog
-
-Directory Structure:
-  output/
-  ├── verilog/              ← Input: DUT + Testbench files
-  │   ├── alu_8bit.v
-  │   ├── alu_8bit_tb.v
-  │   ├── alu_16bit.v
-  │   └── alu_16bit_tb.v
-  └── simulation/           ← Output: Compiled + Waveform files
-      ├── alu_8bit_tb.vvp
-      ├── alu_8bit_tb.vcd
-      ├── alu_16bit_tb.vvp
-      └── alu_16bit_tb.vcd
-
-Required Tools:
-  - iverilog (Icarus Verilog compiler)
-  - vvp (Verilog simulation runtime)
-  - gtkwave (optional, for waveform viewing)
-        '''
+        description='Multi-Bitwidth Multi-LLM Simulation Runner',
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
 
-    # Default path for your project
-    default_verilog = r"D:\DE\RQ\MultiLLM_BDD_Comparison\HdlFormalVerifier\output\verilog"
-    default_output = r"D:\DE\RQ\MultiLLM_BDD_Comparison\HdlFormalVerifier\output\simulation"
-
-    parser.add_argument(
-        '--verilog-dir', '-v',
-        help='Directory containing Verilog files (DUT + testbench)',
-        default=default_verilog
-    )
-
-    parser.add_argument(
-        '--output-dir', '-o',
-        help='Output directory for simulation results',
-        default=default_output
-    )
-
-    parser.add_argument(
-        '--project-root', '-p',
-        help='Project root directory',
-        default=None
-    )
-
-    parser.add_argument(
-        '--open-wave', '-w',
-        choices=['no', 'prompt', 'all', 'first'],
-        default='prompt',
-        help='''Waveform viewing mode:
-            no: Don't open GTKWave
-            prompt: Ask which file to open (default)
-            all: Open all VCD files
-            first: Open first VCD file only'''
-    )
-
-    parser.add_argument(
-        '--debug',
-        action='store_true',
-        default=True,
-        help='Enable debug output'
-    )
+    parser.add_argument('--verilog-dir', help='Base directory containing LLM testbench subdirs')
+    parser.add_argument('--dut-dir', help='Directory containing DUT files')
+    parser.add_argument('--results-dir', help='Directory to save results')
+    parser.add_argument('--project-root', help='Project root directory')
+    parser.add_argument('--debug', action='store_true', default=True, help='Enable debug output')
 
     args = parser.parse_args()
 
-    try:
-        # Create controller
-        controller = SimulationController(
-            verilog_dir=args.verilog_dir,
-            output_dir=args.output_dir,
-            project_root=args.project_root,
-            debug=args.debug
-        )
+    runner = SimulationRunner(
+        verilog_base_dir=args.verilog_dir,
+        dut_dir=args.dut_dir,
+        results_dir=args.results_dir,
+        project_root=args.project_root,
+        debug=args.debug
+    )
 
-        # Run all simulations
-        success = controller.run_all_simulations(auto_wave=args.open_wave)
+    all_results = runner.run_all_simulations()
 
-        sys.exit(0 if success else 1)
-
-    except KeyboardInterrupt:
-        print("\n\n⚠️  Interrupted by user")
-        sys.exit(130)
-    except Exception as e:
-        print(f"\n❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
+    if all_results:
+        runner.generate_comparison_report(all_results)
+        print("\n✅ Simulation campaign completed!")
+    else:
+        print("\n❌ No simulations were run!")
         sys.exit(1)
 
 
