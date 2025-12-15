@@ -40,6 +40,30 @@ except ImportError:
 class LLMProvider(ABC):
     """Abstract base class for LLM providers"""
 
+
+    def _get_proxies(self) -> Optional[Dict[str, str]]:
+        """
+        获取代理配置（从环境变量）
+
+        如果环境变量中设置了代理，返回代理字典
+        否则返回None（不使用代理）
+
+        由benchmark_runner.py的_setup_proxy()设置环境变量
+        """
+        proxies = None
+
+        if os.environ.get('HTTPS_PROXY'):
+            proxies = {
+                'http': os.environ.get('HTTP_PROXY', ''),
+                'https': os.environ.get('HTTPS_PROXY', '')
+            }
+            # 只在第一次使用时打印（避免重复日志）
+            if not hasattr(self, '_proxy_logged'):
+                print(f"  🌐 Using proxy: {proxies['https']}")
+                self._proxy_logged = True
+
+        return proxies
+
     @abstractmethod
     def generate_scenario_description(
             self,
@@ -135,16 +159,16 @@ class GeminiProvider(LLMProvider):
             raise ValueError("Gemini API key not provided. Get free key at: https://makersuite.google.com/app/apikey")
 
         # 如果 google-genai 可用,使用新的 SDK
-        if GENAI_AVAILABLE:
+        if GENAI_AVAILABLE and False:
             # 使用新的模型名称和 SDK
-            self.models_to_try = ["gemini-2.5-flash", "gemini-1.5-flash"]
+            self.models_to_try = ["gemini-1.5-pro-latest", "gemini-1.5-flash-latest"]
             self.client = genai.Client(api_key=self.api_key)
             self.use_sdk = True
             self.max_retries = 3
             self.sleep_seconds = 2.0
         else:
             # 降级到旧的 REST API 方式
-            self.model = model or "gemini-1.5-flash"
+            self.model = model or "gemini-pro"
             self.use_sdk = False
             print("⚠️  Using REST API fallback. For better reliability, install: pip install -U google-genai")
 
@@ -189,6 +213,7 @@ class GeminiProvider(LLMProvider):
     def _call_api_rest(self, prompt: str, max_tokens: int = 200, system_prompt: str = None) -> str:
         """旧的 REST API 调用方式(作为备用)"""
         self._last_prompt = prompt  # 🔧 保存 prompt
+        # 改回 v1beta
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
 
         payload = {
@@ -204,7 +229,9 @@ class GeminiProvider(LLMProvider):
         }
 
         try:
-            response = requests.post(url, json=payload, timeout=30)
+            # 🆕 添加代理支持
+            proxies = self._get_proxies()
+            response = requests.post(url, json=payload, timeout=30, proxies=proxies)
             response.raise_for_status()
             result = response.json()
             return result['candidates'][0]['content']['parts'][0]['text'].strip()
@@ -323,7 +350,9 @@ class GroqProvider(LLMProvider):
         }
 
         try:
-            response = requests.post(self.api_url, headers=headers, json=payload, timeout=30)
+            # 🆕 添加代理支持
+            proxies = self._get_proxies()
+            response = requests.post(self.api_url, headers=headers, json=payload, timeout=30, proxies=proxies)
             response.raise_for_status()
             result = response.json()
             return result['choices'][0]['message']['content'].strip()
@@ -399,6 +428,7 @@ class DeepSeekProvider(LLMProvider):
     """
 
     def __init__(self, api_key: Optional[str] = None, model: str = "deepseek-chat"):
+
         self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
         self.model = model
         self.api_url = "https://api.deepseek.com/v1/chat/completions"
@@ -406,8 +436,27 @@ class DeepSeekProvider(LLMProvider):
         if not self.api_key:
             raise ValueError("DeepSeek API key not provided. Get free key at: https://platform.deepseek.com/")
 
+    def _get_proxies(self) -> None:
+        """
+        DeepSeek 不需要代理（国内 API）
+        覆盖父类方法，始终返回 None
+        """
+        return None
     def _call_api(self, prompt: str, max_tokens: int = 200, system_prompt: str = None) -> str:
-        """Call DeepSeek API"""
+        """
+        Call DeepSeek API with detailed debug output
+
+        Enhanced with comprehensive debugging similar to OpenAI provider
+        """
+        # ============================================================
+        # 调试信息：调用参数
+        # ============================================================
+        print(f"   🔍 [DEBUG][DeepSeek._call_api] Called with max_tokens={max_tokens}")
+        print(f"   🔍 [DEBUG] Model: {self.model}")
+        print(f"   🔍 [DEBUG] Prompt length: {len(prompt)} chars")
+        if system_prompt:
+            print(f"   🔍 [DEBUG] System prompt length: {len(system_prompt)} chars")
+
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
@@ -429,14 +478,117 @@ class DeepSeekProvider(LLMProvider):
             "temperature": 0.7
         }
 
-        try:
-            response = requests.post(self.api_url, headers=headers, json=payload, timeout=30)
-            response.raise_for_status()
-            result = response.json()
-            return result['choices'][0]['message']['content'].strip()
-        except Exception as e:
-            print(f"⚠️  DeepSeek API request failed: {e}")
-            return self._fallback_description(prompt)
+        # ============================================================
+        # 调试信息：请求详情
+        # ============================================================
+        print(f"   🔍 [DEBUG] Request URL: {self.api_url}")
+        print(f"   🔍 [DEBUG] Request payload: model={self.model}, messages=2, max_tokens={max_tokens}, temp=0.7")
+
+        max_retries = 3
+        retry_delay = 2
+
+        for attempt in range(max_retries):
+            try:
+                # ============================================================
+                # 调试信息：重试次数（仅当 attempt > 0）
+                # ============================================================
+                if attempt > 0:
+                    print(f"   🔄 Retrying...")
+                    print(f"   🔄 [DEBUG] Retry {attempt}/{max_retries} - max_tokens: {max_tokens}")
+
+                # ============================================================
+                # 调试信息：正在发送请求
+                # ============================================================
+                print(f"   📡 [DEBUG] Sending request to DeepSeek API... (attempt {attempt + 1}/{max_retries})")
+
+                # 🆕 添加代理支持
+                proxies = self._get_proxies()
+                response = requests.post(self.api_url, headers=headers, json=payload, timeout=60, proxies=proxies)
+
+                # ============================================================
+                # 调试信息：响应状态
+                # ============================================================
+                print(f"   📥 [DEBUG] Response status: {response.status_code}")
+
+                if response.status_code == 200:
+                    result = response.json()
+                    content = result['choices'][0]['message']['content'].strip()
+
+                    # ============================================================
+                    # 调试信息：成功和 token 统计
+                    # ============================================================
+                    usage = result.get('usage', {})
+                    print(f"   ✅ [DEBUG] API call successful")
+                    print(f"   📊 [DEBUG] Response length: {len(content)} chars")
+
+                    if usage:
+                        prompt_tokens = usage.get('prompt_tokens', 'N/A')
+                        completion_tokens = usage.get('completion_tokens', 'N/A')
+                        total_tokens = usage.get('total_tokens', 'N/A')
+                        print(f"   📊 [DEBUG] Token usage: prompt={prompt_tokens}, "
+                              f"completion={completion_tokens}, total={total_tokens}")
+
+                    # 显示完成原因
+                    finish_reason = result['choices'][0].get('finish_reason', 'unknown')
+                    print(f"   🎯 [DEBUG] Finish reason: {finish_reason}")
+
+                    # 显示模型信息（如果有）
+                    if 'model' in result:
+                        print(f"   🤖 [DEBUG] Model used: {result['model']}")
+
+                    print(f"   ✅ [DEBUG][DeepSeek._call_api] Returning response ({len(content)} chars)")
+                    return content
+                else:
+                    # ============================================================
+                    # 调试信息：详细的错误信息
+                    # ============================================================
+                    error_detail = response.text
+                    print(f"   ❌ [ERROR] API request failed: Status {response.status_code}")
+                    print(f"   ❌ [ERROR] Error detail: {error_detail[:200]}")  # 只显示前200字符
+
+                    if attempt < max_retries - 1:
+                        print(f"   ⏳ [DEBUG] Waiting {retry_delay}s before retry...")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # 指数退避
+                    else:
+                        print(f"   ❌ [ERROR] All {max_retries} attempts failed")
+                        print(f"   ⚠️  [WARN] Returning fallback response")
+                        return self._fallback_description(prompt)
+
+            except requests.exceptions.Timeout:
+                print(f"   ❌ [ERROR] Request timeout (60s)")
+                if attempt < max_retries - 1:
+                    print(f"   🔄 [DEBUG] Retrying after timeout...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    print(f"   ⚠️  [WARN] Timeout after all retries, returning fallback")
+                    return self._fallback_description(prompt)
+
+            except requests.exceptions.RequestException as e:
+                print(f"   ❌ [ERROR] Network error: {type(e).__name__}: {str(e)}")
+                if attempt < max_retries - 1:
+                    print(f"   🔄 [DEBUG] Retrying after network error...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    print(f"   ⚠️  [WARN] Network error after all retries, returning fallback")
+                    return self._fallback_description(prompt)
+
+            except Exception as e:
+                print(f"   ❌ [ERROR] Unexpected error: {type(e).__name__}: {str(e)}")
+                if attempt < max_retries - 1:
+                    print(f"   🔄 [DEBUG] Retrying after unexpected error...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    print(f"   ⚠️  [WARN] Unexpected error after all retries")
+                    print(f"   ⚠️  DeepSeek API request failed: {e}")
+                    return self._fallback_description(prompt)
+
+        # 应该不会到达这里
+        print(f"   ⚠️  [WARN] Max retries exceeded, returning fallback")
+        return self._fallback_description(prompt)
 
     def generate_scenario_description(
             self,
