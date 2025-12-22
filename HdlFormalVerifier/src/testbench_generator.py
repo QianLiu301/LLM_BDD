@@ -1,55 +1,26 @@
 """
-Testbench Generator - Generate Verilog testbench from BDD .feature files
-=========================================================================
+Testbench Generator with Quality Analysis - Enhanced Version (Fixed)
+===================================================================
 
-ENHANCED VERSION: Multi-LLM Support with organized directory structure
+FIXED VERSION: All quality scores are now capped at 100%
+- Fixed functional coverage calculation
+- Fixed input diversity calculation
+- Fixed test uniqueness calculation
+- Fixed corner case coverage calculation
+- Fixed overall quality score calculation
 
-This module reads .feature files and generates Verilog testbench.
-NO LLM is used - this is a deterministic transformation.
+ENHANCED FEATURES:
+- ✅ Multi-LLM Support
+- ✅ Quality Analysis for each testbench
+- ✅ Comprehensive quality metrics
+- ✅ Comparison reports across LLMs
+- ✅ All scores properly capped at 100%
 
-ARCHITECTURE:
-    output/bdd/{llm}/*.feature  (from bdd_generator.py)
-           │
-           ▼
-    ┌────────────────────┐
-    │ testbench_generator│  ◄── NO LLM (deterministic)
-    │    (this file)     │
-    └──────────┬─────────┘
-               │
-               ▼
-       output/verilog/{llm}/testbench.v
-               │
-               ├── Tests ──► output/dut/alu.v (fixed DUT)
-               │
-               ▼
-          Simulation (iverilog)
-
-DIRECTORY MAPPING:
-    output/bdd/groq/alu_16bit.feature     → output/verilog/groq/alu_16bit_tb.v
-    output/bdd/deepseek/alu_16bit.feature → output/verilog/deepseek/alu_16bit_tb.v
-    output/bdd/openai/alu_16bit.feature   → output/verilog/openai/alu_16bit_tb.v
-
-All testbenches test the SAME fixed DUT: output/dut/alu_16bit.v
-
-NEW FEATURES:
-- ✅ Recursive scanning of LLM subdirectories
-- ✅ Maintains LLM-specific directory structure
-- ✅ Batch processing for all LLMs
-- ✅ No hardcoded paths
-- ✅ Automatic DUT detection
-
-PURPOSE:
-- Read .feature files from output/bdd/{llm}/
-- Parse test scenarios and expected results
-- Generate testbench.v for each LLM in separate directories
-- Support decimal/hexadecimal number formats
-- Generate VCD dump for waveform viewing
-
-This ensures:
-1. Fair comparison (all test the same DUT)
-2. Deterministic output (same .feature → same testbench)
-3. Independence from LLM (no API calls needed)
-4. Clear organization by LLM provider
+NEW QUALITY METRICS:
+1. Functional Coverage - which operations are tested
+2. Input Space Coverage - positive, negative, zero, boundary values
+3. Test Uniqueness - duplicate detection
+4. Corner Case Coverage - edge cases and overflow scenarios
 """
 
 import os
@@ -57,9 +28,10 @@ import re
 import json
 import argparse
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Union
+from typing import Dict, List, Tuple, Optional, Union, Set
 from enum import Enum
 from datetime import datetime
+from collections import defaultdict
 
 
 class NumberFormat(Enum):
@@ -69,15 +41,425 @@ class NumberFormat(Enum):
     BINARY = "binary"
 
 
+class TestQualityAnalyzer:
+    """
+    Analyze testbench quality with comprehensive metrics.
+    """
+
+    def __init__(self, bitwidth: int = 16):
+        self.bitwidth = bitwidth
+        self.max_value = (1 << bitwidth) - 1
+        self.min_signed = -(1 << (bitwidth - 1))
+        self.max_signed = (1 << (bitwidth - 1)) - 1
+
+    def analyze(self, scenarios: List[Dict], operations: Dict = None) -> Dict:
+        """
+        Comprehensive quality analysis of test scenarios.
+
+        Returns dictionary with quality metrics
+        """
+        analysis = {
+            'total_tests': len(scenarios),
+            'functional_coverage': self._analyze_functional_coverage(scenarios, operations),
+            'input_space_coverage': self._analyze_input_space_coverage(scenarios),
+            'test_uniqueness': self._analyze_test_uniqueness(scenarios),
+            'corner_case_coverage': self._analyze_corner_cases(scenarios),
+            'quality_score': 0.0  # Overall quality score (0-100)
+        }
+
+        # Calculate overall quality score
+        analysis['quality_score'] = self._calculate_quality_score(analysis)
+
+        return analysis
+
+    def _analyze_functional_coverage(self, scenarios: List[Dict], operations: Dict = None) -> Dict:
+        """Analyze which operations are covered by tests"""
+        op_counts = defaultdict(int)
+        unique_ops = set()
+
+        for scenario in scenarios:
+            # Try to get opcode from scenario
+            op = scenario.get('opcode')
+            if op is None:
+                # Try alternative field names
+                op = scenario.get('operation')
+
+            # Convert to string for consistency
+            if isinstance(op, int):
+                op = f"{op:04b}"
+            elif isinstance(op, str):
+                # Ensure it's a 4-bit binary string
+                if op.startswith('0x') or op.startswith('0X'):
+                    op_int = int(op, 16)
+                    op = f"{op_int:04b}"
+                elif not all(c in '01' for c in op):
+                    # Keep as is for now
+                    pass
+
+            if op:
+                op_counts[op] += 1
+                unique_ops.add(op)
+
+        # Expected operations (ADD, SUB, AND, OR = 4 operations)
+        expected_ops = 4
+        covered_ops = len(unique_ops)
+
+        # 确保coverage不超过100%
+        coverage_percentage = min((covered_ops / expected_ops * 100) if expected_ops > 0 else 0, 100.0)
+
+        return {
+            'operations_tested': dict(op_counts),
+            'unique_operations': covered_ops,
+            'expected_operations': expected_ops,
+            'coverage_percentage': coverage_percentage,
+            'tests_per_operation': {op: count for op, count in op_counts.items()}
+        }
+
+    def _analyze_input_space_coverage(self, scenarios: List[Dict]) -> Dict:
+        """Analyze coverage of input space"""
+        a_values = []
+        b_values = []
+
+        for scenario in scenarios:
+            # Try different possible field names
+            a = scenario.get('a') or scenario.get('A') or 0
+            b = scenario.get('b') or scenario.get('B') or 0
+
+            # Handle negative numbers in signed representation
+            if a > self.max_signed:
+                a = a - (1 << self.bitwidth)
+            if b > self.max_signed:
+                b = b - (1 << self.bitwidth)
+            a_values.append(a)
+            b_values.append(b)
+
+        def categorize_values(values):
+            categories = {
+                'zero': 0,
+                'positive_small': 0,  # 1-100
+                'positive_medium': 0,  # 101-1000
+                'positive_large': 0,  # > 1000
+                'negative_small': 0,  # -1 to -100
+                'negative_medium': 0,  # -101 to -1000
+                'negative_large': 0,  # < -1000
+                'boundary_values': 0  # max, min, near-max, near-min
+            }
+
+            for v in values:
+                if v == 0:
+                    categories['zero'] += 1
+                elif v > 0:
+                    if v <= 100:
+                        categories['positive_small'] += 1
+                    elif v <= 1000:
+                        categories['positive_medium'] += 1
+                    else:
+                        categories['positive_large'] += 1
+                else:  # v < 0
+                    if v >= -100:
+                        categories['negative_small'] += 1
+                    elif v >= -1000:
+                        categories['negative_medium'] += 1
+                    else:
+                        categories['negative_large'] += 1
+
+                # Check boundary values
+                if v in [self.max_signed, self.min_signed,
+                        self.max_signed - 1, self.min_signed + 1,
+                        self.max_value, 0]:
+                    categories['boundary_values'] += 1
+
+            return categories
+
+        a_categories = categorize_values(a_values)
+        b_categories = categorize_values(b_values)
+
+        # Calculate diversity score (确保不超过100%)
+        total_categories = 8  # Number of categories
+        covered_a = sum(1 for v in a_categories.values() if v > 0)
+        covered_b = sum(1 for v in b_categories.values() if v > 0)
+        diversity_score = min(((covered_a + covered_b) / (2 * total_categories)) * 100, 100.0)
+
+        return {
+            'input_a_distribution': a_categories,
+            'input_b_distribution': b_categories,
+            'diversity_score': diversity_score,
+            'has_zero': a_categories['zero'] > 0 or b_categories['zero'] > 0,
+            'has_negative': any(k.startswith('negative') for k in a_categories if a_categories[k] > 0) or \
+                          any(k.startswith('negative') for k in b_categories if b_categories[k] > 0),
+            'has_boundary': a_categories['boundary_values'] > 0 or b_categories['boundary_values'] > 0
+        }
+
+    def _analyze_test_uniqueness(self, scenarios: List[Dict]) -> Dict:
+        """Analyze test uniqueness and detect duplicates"""
+        test_signatures = []
+        duplicates = []
+
+        for i, scenario in enumerate(scenarios):
+            a = scenario.get('a') or scenario.get('A') or 0
+            b = scenario.get('b') or scenario.get('B') or 0
+            op = scenario.get('opcode') or scenario.get('operation') or '0000'
+
+            signature = (a, b, str(op))
+
+            if signature in test_signatures:
+                # Found duplicate
+                dup_index = test_signatures.index(signature)
+                duplicates.append({
+                    'original_index': dup_index + 1,
+                    'duplicate_index': i + 1,
+                    'signature': f"a={a}, b={b}, op={op}"
+                })
+            else:
+                test_signatures.append(signature)
+
+        unique_count = len(set(test_signatures))
+        total_count = len(scenarios)
+        uniqueness_rate = min((unique_count / total_count * 100) if total_count > 0 else 0, 100.0)
+
+        return {
+            'total_tests': total_count,
+            'unique_tests': unique_count,
+            'duplicate_tests': len(duplicates),
+            'uniqueness_percentage': uniqueness_rate,
+            'duplicates': duplicates[:5]  # Show first 5 duplicates
+        }
+
+    def _analyze_corner_cases(self, scenarios: List[Dict]) -> Dict:
+        """Analyze coverage of corner cases and edge conditions"""
+        corner_cases = {
+            'zero_operands': False,
+            'max_values': False,
+            'min_values': False,
+            'overflow_potential': False,
+            'underflow_potential': False,
+            'sign_boundary': False,
+            'all_ones': False,
+            'alternating_bits': False,
+        }
+
+        corner_case_tests = []
+
+        for scenario in scenarios:
+            a = scenario.get('a') or scenario.get('A') or 0
+            b = scenario.get('b') or scenario.get('B') or 0
+            op = scenario.get('opcode') or scenario.get('operation') or '0000'
+
+            # Convert to signed if needed
+            a_signed = a if a <= self.max_signed else a - (1 << self.bitwidth)
+            b_signed = b if b <= self.max_signed else b - (1 << self.bitwidth)
+
+            # Check corner cases
+            if a == 0 and b == 0:
+                corner_cases['zero_operands'] = True
+                corner_case_tests.append('zero_operands')
+
+            if a == self.max_value or b == self.max_value:
+                corner_cases['all_ones'] = True
+                corner_case_tests.append('all_ones')
+
+            if abs(a_signed) == self.max_signed or abs(b_signed) == self.max_signed:
+                corner_cases['max_values'] = True
+                corner_case_tests.append('max_values')
+
+            if a_signed == self.min_signed or b_signed == self.min_signed:
+                corner_cases['min_values'] = True
+                corner_case_tests.append('min_values')
+
+            # Check for overflow potential (ADD with large positive numbers)
+            if str(op) in ['0000', '0x0'] and a_signed > 0 and b_signed > 0:
+                if a_signed + b_signed > self.max_signed:
+                    corner_cases['overflow_potential'] = True
+                    corner_case_tests.append('overflow_potential')
+
+            # Check for underflow potential (SUB with negative result beyond min)
+            if str(op) in ['0001', '0x1'] and a_signed < b_signed:
+                if a_signed - b_signed < self.min_signed:
+                    corner_cases['underflow_potential'] = True
+                    corner_case_tests.append('underflow_potential')
+
+            # Check sign boundary (values near 0x7FFF/0x8000 boundary)
+            if abs(a_signed - 0) < 10 or abs(b_signed - 0) < 10:
+                corner_cases['sign_boundary'] = True
+
+            # Check alternating bit patterns
+            if self.bitwidth == 8:
+                if a in [0xAA, 0x55] or b in [0xAA, 0x55]:
+                    corner_cases['alternating_bits'] = True
+                    corner_case_tests.append('alternating_bits')
+            elif self.bitwidth == 16:
+                if a in [0xAAAA, 0x5555] or b in [0xAAAA, 0x5555]:
+                    corner_cases['alternating_bits'] = True
+                    corner_case_tests.append('alternating_bits')
+
+        covered = sum(1 for v in corner_cases.values() if v)
+        total = len(corner_cases)
+
+        return {
+            'corner_cases_covered': corner_cases,
+            'coverage_count': covered,
+            'total_corner_cases': total,
+            'coverage_percentage': min((covered / total * 100) if total > 0 else 0, 100.0),
+            'corner_case_tests': list(set(corner_case_tests))
+        }
+
+    def _calculate_quality_score(self, analysis: Dict) -> float:
+        """Calculate overall quality score (0-100)"""
+        weights = {
+            'functional_coverage': 0.30,  # 30%
+            'input_diversity': 0.25,  # 25%
+            'uniqueness': 0.20,  # 20%
+            'corner_cases': 0.25,  # 25%
+        }
+
+        # 确保每个维度的分数不超过100
+        scores = {
+            'functional_coverage': min(analysis['functional_coverage']['coverage_percentage'], 100.0),
+            'input_diversity': min(analysis['input_space_coverage']['diversity_score'], 100.0),
+            'uniqueness': min(analysis['test_uniqueness']['uniqueness_percentage'], 100.0),
+            'corner_cases': min(analysis['corner_case_coverage']['coverage_percentage'], 100.0),
+        }
+
+        total_score = sum(scores[k] * weights[k] for k in weights)
+
+        # 确保总分不超过100
+        return round(min(total_score, 100.0), 2)
+
+    def generate_report(self, analysis: Dict, llm_name: str = "Unknown") -> str:
+        """Generate human-readable quality report"""
+        lines = []
+        lines.append("=" * 80)
+        lines.append(f" Test Quality Analysis Report - {llm_name}")
+        lines.append("=" * 80)
+        lines.append("")
+
+        # Overall Score
+        score = analysis['quality_score']
+        score_emoji = "🎉" if score >= 80 else "✅" if score >= 60 else "⚠️" if score >= 40 else "❌"
+        lines.append(f"📊 Overall Quality Score: {score:.1f}/100 {score_emoji}")
+        lines.append("")
+
+        # Functional Coverage
+        fc = analysis['functional_coverage']
+        lines.append("1️⃣  Functional Coverage")
+        lines.append("-" * 80)
+        lines.append(f"   Operations Tested: {fc['unique_operations']}/{fc['expected_operations']} ({fc['coverage_percentage']:.1f}%)")
+        lines.append(f"   Total Tests: {analysis['total_tests']}")
+        lines.append("")
+        lines.append("   Tests per Operation:")
+        for op, count in sorted(fc['tests_per_operation'].items()):
+            lines.append(f"      • {op}: {count} tests")
+        lines.append("")
+
+        # Input Space Coverage
+        isc = analysis['input_space_coverage']
+        lines.append("2️⃣  Input Space Coverage")
+        lines.append("-" * 80)
+        lines.append(f"   Diversity Score: {isc['diversity_score']:.1f}%")
+        lines.append(f"   ✓ Zero values: {'Yes' if isc['has_zero'] else 'No'}")
+        lines.append(f"   ✓ Negative values: {'Yes' if isc['has_negative'] else 'No'}")
+        lines.append(f"   ✓ Boundary values: {'Yes' if isc['has_boundary'] else 'No'}")
+        lines.append("")
+
+        # Test Uniqueness
+        tu = analysis['test_uniqueness']
+        lines.append("3️⃣  Test Uniqueness")
+        lines.append("-" * 80)
+        lines.append(f"   Unique Tests: {tu['unique_tests']}/{tu['total_tests']} ({tu['uniqueness_percentage']:.1f}%)")
+        lines.append(f"   Duplicate Tests: {tu['duplicate_tests']}")
+        if tu['duplicates']:
+            lines.append("   First few duplicates:")
+            for dup in tu['duplicates'][:3]:
+                lines.append(f"      • Test {dup['duplicate_index']} duplicates Test {dup['original_index']}: {dup['signature']}")
+        lines.append("")
+
+        # Corner Cases
+        cc = analysis['corner_case_coverage']
+        lines.append("4️⃣  Corner Case Coverage")
+        lines.append("-" * 80)
+        lines.append(f"   Coverage: {cc['coverage_count']}/{cc['total_corner_cases']} ({cc['coverage_percentage']:.1f}%)")
+        lines.append("   Covered corner cases:")
+        for case, covered in sorted(cc['corner_cases_covered'].items()):
+            emoji = "✅" if covered else "❌"
+            lines.append(f"      {emoji} {case.replace('_', ' ').title()}")
+        lines.append("")
+
+        # Recommendations
+        lines.append("💡 Recommendations")
+        lines.append("-" * 80)
+        recs = self._generate_recommendations(analysis)
+        for i, rec in enumerate(recs, 1):
+            lines.append(f"   {i}. {rec}")
+        lines.append("")
+
+        lines.append("=" * 80)
+
+        return '\n'.join(lines)
+
+    def _generate_recommendations(self, analysis: Dict) -> List[str]:
+        """Generate improvement recommendations based on analysis"""
+        recommendations = []
+
+        # Functional coverage
+        fc = analysis['functional_coverage']
+        if fc['coverage_percentage'] < 100:
+            recommendations.append(
+                f"Add tests for missing operations ({fc['expected_operations'] - fc['unique_operations']} operations not covered)"
+            )
+
+        op_counts = fc['tests_per_operation']
+        if op_counts:
+            min_tests = min(op_counts.values())
+            if min_tests < 3:
+                recommendations.append(
+                    f"Some operations have very few tests (minimum: {min_tests}). Consider adding more."
+                )
+
+        # Input diversity
+        isc = analysis['input_space_coverage']
+        if isc['diversity_score'] < 60:
+            recommendations.append(
+                "Improve input diversity by adding more varied test values"
+            )
+        if not isc['has_negative']:
+            recommendations.append(
+                "Add tests with negative numbers to verify signed arithmetic"
+            )
+        if not isc['has_boundary']:
+            recommendations.append(
+                "Add boundary value tests (max, min values)"
+            )
+
+        # Uniqueness
+        tu = analysis['test_uniqueness']
+        if tu['duplicate_tests'] > 0:
+            recommendations.append(
+                f"Remove {tu['duplicate_tests']} duplicate test(s) to improve efficiency"
+            )
+
+        # Corner cases
+        cc = analysis['corner_case_coverage']
+        if cc['coverage_percentage'] < 50:
+            uncovered = [k for k, v in cc['corner_cases_covered'].items() if not v]
+            recommendations.append(
+                f"Add corner case tests: {', '.join(uncovered[:3])}"
+            )
+
+        if not recommendations:
+            recommendations.append("Excellent test coverage! No major improvements needed.")
+
+        return recommendations
+
+
 class FeatureParser:
     """Parse .feature files and extract test scenarios"""
 
     def __init__(self, feature_file: str, debug: bool = True):
         self.feature_file = feature_file
         self.debug = debug
-        self.bitwidth = 16  # default
-        self.operations = {}  # opcode -> operation_name
-        self.scenarios = []  # test scenarios
+        self.bitwidth = 16
+        self.operations = {}
+        self.scenarios = []
         self.number_format = NumberFormat.DECIMAL
 
     def parse(self) -> Dict:
@@ -85,38 +467,30 @@ class FeatureParser:
         with open(self.feature_file, 'r', encoding='utf-8') as f:
             content = f.read()
 
-        # Extract bitwidth
         bitwidth_match = re.search(r'(\d+)[-_]?bit', content, re.IGNORECASE)
         if bitwidth_match:
             self.bitwidth = int(bitwidth_match.group(1))
 
-        # Detect number format
         self._detect_number_format(content)
-
-        # Extract opcode mapping
         self._extract_operations(content)
-
-        # Extract test scenarios
         self._extract_scenarios(content)
 
         # Infer bitwidth from values if not found
         if not bitwidth_match and self.scenarios:
             self.bitwidth = self._infer_bitwidth_from_scenarios()
-            if self.debug:
-                print(f"   🔍 Inferred bitwidth from values: {self.bitwidth}-bit")
 
         return {
             'bitwidth': self.bitwidth,
             'operations': self.operations,
             'scenarios': self.scenarios,
-            'number_format': self.number_format
+            'number_format': self.number_format.value
         }
 
     def _infer_bitwidth_from_scenarios(self) -> int:
         """Infer bitwidth from value range"""
         max_value = 0
         for scenario in self.scenarios:
-            for key in ['a', 'b', 'result']:
+            for key in ['a', 'b', 'result', 'expected_result']:
                 if key in scenario:
                     val = scenario[key]
                     if isinstance(val, int) and val > max_value:
@@ -133,20 +507,18 @@ class FeatureParser:
             return 64
 
     def _detect_number_format(self, content: str):
-        """Detect number format from content"""
-        # Check for hex patterns (0x...)
-        if re.search(r'\b0x[0-9a-fA-F]+\b', content):
+        """Detect number format used in feature file"""
+        if re.search(r'\b0x[0-9A-Fa-f]+\b', content):
             self.number_format = NumberFormat.HEXADECIMAL
-        # Check for binary patterns (0b...)
         elif re.search(r'\b0b[01]+\b', content):
             self.number_format = NumberFormat.BINARY
         else:
             self.number_format = NumberFormat.DECIMAL
 
     def _extract_operations(self, content: str):
-        """Extract operation-to-opcode mapping"""
-        # Look for opcode definitions in comments or background
-        opcode_pattern = r'(\w+)\s*(?:operation|opcode|code)?\s*(?:is|=|:)?\s*["\']?([0-9a-fA-Fx]+)["\']?'
+        """Extract operation definitions"""
+        # Look for opcode definitions in various formats
+        opcode_pattern = r'(\w+)\s*(?:operation|opcode)?\s*(?:with\s+)?opcode\s+([0-9a-fA-Fx]+)'
 
         for match in re.finditer(opcode_pattern, content, re.IGNORECASE):
             op_name = match.group(1).upper()
@@ -159,7 +531,7 @@ class FeatureParser:
             elif all(c in '01' for c in opcode):
                 opcode = opcode.zfill(4)
 
-            self.operations[opcode] = op_name
+            self.operations[op_name] = opcode
 
     def _extract_scenarios(self, content: str):
         """Extract test scenarios from Examples tables"""
@@ -195,33 +567,19 @@ class FeatureParser:
                     self.scenarios.append(scenario)
 
     def _parse_value(self, value_str: str) -> Optional[int]:
-        """Parse value (hex/decimal/binary)"""
-        value_str = str(value_str).strip()
-
+        """Parse value string to integer"""
         try:
-            # Binary (0b...)
             if value_str.startswith('0b') or value_str.startswith('0B'):
                 return int(value_str, 2)
-
-            # Hexadecimal (0x...)
             if value_str.startswith('0x') or value_str.startswith('0X'):
                 return int(value_str, 16)
-
-            # Decimal
             return int(value_str)
         except (ValueError, AttributeError):
             return None
 
 
 class TestbenchGenerator:
-    """
-    Generate Verilog testbench from .feature files.
-
-    ENHANCED: Multi-LLM support with directory structure preservation
-
-    This generator ONLY creates testbench files.
-    ALU design is generated separately by alu_generator.py.
-    """
+    """Generate Verilog testbench with quality analysis"""
 
     def __init__(
         self,
@@ -232,73 +590,55 @@ class TestbenchGenerator:
         dut_module_name: Optional[str] = None,
         debug: bool = True
     ):
-        """
-        Initialize testbench generator.
-
-        Args:
-            feature_dir: Directory containing .feature files (supports LLM subdirs)
-            output_dir: Base directory to save testbench files
-            dut_dir: Directory containing DUT .v files (default: output/dut)
-            project_root: Project root directory
-            dut_module_name: Name of DUT module (auto-detected if not specified)
-            debug: Enable debug output
-        """
         self.debug = debug
         self.project_root = Path(project_root) if project_root else None
         self.dut_module_name = dut_module_name
 
-        # Setup paths
         self.feature_dir = self._find_feature_dir(feature_dir)
         self.output_base_dir = self._setup_output_base_dir(output_dir)
         self.dut_dir = self._find_dut_dir(dut_dir)
+        self.quality_reports_dir = self.output_base_dir.parent / "quality_reports"
+        self.quality_reports_dir.mkdir(parents=True, exist_ok=True)
 
         print(f"📁 Feature directory: {self.feature_dir}")
         print(f"📁 Output base directory: {self.output_base_dir}")
         print(f"📁 DUT directory: {self.dut_dir}")
+        print(f"📁 Quality reports: {self.quality_reports_dir}")
 
     def _find_feature_dir(self, feature_dir: Optional[str]) -> Path:
-        """Find .feature files directory dynamically"""
-        # 1. Explicit specification
+        """Find .feature files directory"""
         if feature_dir:
             path = Path(feature_dir)
             if path.exists():
                 return path
-            print(f"⚠️  Specified feature_dir not found: {feature_dir}")
 
-        # 2. Project root based
         if self.project_root:
             path = self.project_root / "output" / "bdd"
             if path.exists():
                 return path
 
-        # 3. Search common locations
         current = Path.cwd()
         search_paths = [
             current / "output" / "bdd",
             current / "bdd",
             current.parent / "output" / "bdd",
-            current / "src" / "output" / "bdd",
         ]
 
         for path in search_paths:
             if path.exists():
-                self._debug_print(f"Found features at: {path}", "SUCCESS")
                 return path
 
-        # 4. Create default
         default = current / "output" / "bdd"
         default.mkdir(parents=True, exist_ok=True)
-        print(f"⚠️  No feature directory found, created: {default}")
         return default
 
     def _setup_output_base_dir(self, output_dir: Optional[str]) -> Path:
-        """Setup base output directory for testbench files"""
+        """Setup output directory"""
         if output_dir:
             path = Path(output_dir)
         elif self.project_root:
             path = self.project_root / "output" / "verilog"
         else:
-            # Same level as feature directory
             path = self.feature_dir.parent / "verilog"
 
         path.mkdir(parents=True, exist_ok=True)
@@ -311,47 +651,25 @@ class TestbenchGenerator:
             if path.exists():
                 return path
 
-        # Default: output/dut
         if self.project_root:
             path = self.project_root / "output" / "dut"
         else:
             path = self.feature_dir.parent / "dut"
 
         if not path.exists():
-            print(f"⚠️  DUT directory not found: {path}")
-            print(f"   Creating directory...")
             path.mkdir(parents=True, exist_ok=True)
 
         return path
 
-    def _debug_print(self, message: str, level: str = "INFO"):
-        """Debug output"""
-        if not self.debug and level == "DEBUG":
-            return
-
-        icons = {
-            "INFO": "ℹ️ ", "DEBUG": "🔍", "WARN": "⚠️ ",
-            "ERROR": "❌", "SUCCESS": "✅", "STEP": "📌",
-        }
-        icon = icons.get(level, "  ")
-        print(f"   {icon} [{level}] {message}")
-
     def scan_features(self) -> List[Tuple[Path, str]]:
-        """
-        Scan for .feature files, including LLM subdirectories.
-
-        Returns:
-            List of (feature_path, llm_name) tuples
-        """
-        print(f"\n🔍 Scanning for .feature files in: {self.feature_dir}")
+        """Scan for .feature files"""
+        print(f"\n🔍 Scanning for .feature files...")
 
         feature_files = []
 
-        # Check root directory
         for f in self.feature_dir.glob("*.feature"):
             feature_files.append((f, "default"))
 
-        # Check LLM subdirectories
         for subdir in self.feature_dir.iterdir():
             if subdir.is_dir():
                 llm_name = subdir.name
@@ -362,91 +680,66 @@ class TestbenchGenerator:
             print(f"   ⚠️  No .feature files found")
             return []
 
-        print(f"   ✅ Found {len(feature_files)} feature file(s):")
-
-        # Group by LLM for display
-        by_llm = {}
-        for path, llm in feature_files:
-            if llm not in by_llm:
-                by_llm[llm] = []
-            by_llm[llm].append(path)
-
-        for llm, paths in sorted(by_llm.items()):
-            print(f"      📂 {llm}:")
-            for p in paths:
-                print(f"         • {p.name}")
-
+        print(f"   ✅ Found {len(feature_files)} feature file(s)")
         return feature_files
 
     def _detect_dut_module(self, bitwidth: int = None) -> str:
-        """
-        Detect DUT module name.
-
-        Priority:
-        1. Explicitly specified dut_module_name
-        2. Infer from bitwidth (alu_{bitwidth}bit)
-        3. Search for existing ALU .v files in DUT directory
-        4. Default fallback
-        """
-        # 1. Use explicitly specified name
+        """Detect DUT module name"""
         if self.dut_module_name:
             return self.dut_module_name
 
-        # 2. Infer from bitwidth (PREFERRED METHOD)
         if bitwidth:
-            module_name = f"alu_{bitwidth}bit"
-            self._debug_print(f"DUT module from bitwidth: {module_name}", "INFO")
-            return module_name
+            return f"alu_{bitwidth}bit"
 
-        # 3. Search for ALU .v files in DUT directory
-        verilog_files = list(self.dut_dir.glob("alu_*.v"))
+        alu_files = list(self.dut_dir.glob("alu_*.v"))
+        if alu_files:
+            return alu_files[0].stem
 
-        for vf in verilog_files:
-            # Skip testbench files
-            if '_tb.v' in vf.name:
-                continue
-            # Extract module name from filename
-            module_name = vf.stem
-            self._debug_print(f"Detected DUT module from file: {module_name}", "INFO")
-            return module_name
-
-        # 4. Default fallback
         return "alu_16bit"
 
-    def generate_testbench(self, spec: Dict, feature_name: str, llm_name: str = "default") -> str:
-        """Generate testbench Verilog code"""
+    def generate_testbench(
+        self,
+        spec: Dict,
+        feature_name: str,
+        llm_name: str = "default"
+    ) -> Tuple[str, Dict]:
+        """
+        Generate testbench and quality analysis.
+
+        Returns:
+            (testbench_content, quality_analysis)
+        """
         bitwidth = spec['bitwidth']
-        operations = spec['operations']
         scenarios = spec['scenarios']
-        number_format = spec.get('number_format', NumberFormat.DECIMAL)
+        operations = spec.get('operations', {})
+        number_format = NumberFormat(spec.get('number_format', 'decimal'))
 
-        # Detect or use specified DUT module name - pass bitwidth for correct inference
-        dut_module = self._detect_dut_module(bitwidth=bitwidth)
-        opcode_width = 4  # Standard 4-bit opcode
+        # Quality Analysis
+        analyzer = TestQualityAnalyzer(bitwidth=bitwidth)
+        quality_analysis = analyzer.analyze(scenarios, operations)
 
+        # Detect DUT module
+        dut_module = self._detect_dut_module(bitwidth)
+        opcode_width = 4
+
+        # Generate testbench content
         lines = []
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        # Header
-        lines.append(f"//==============================================================================")
+        lines.append("//==============================================================================")
         lines.append(f"// Testbench: {feature_name}")
+        lines.append(f"// Generated: {timestamp}")
         lines.append(f"// LLM Provider: {llm_name}")
-        lines.append(f"// Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        lines.append(f"// Generator: testbench_generator.py (deterministic, no LLM)")
-        lines.append(f"//")
-        lines.append(f"// DUT Module: {dut_module} (from {self.dut_dir})")
-        lines.append(f"// Bitwidth: {bitwidth}-bit")
-        lines.append(f"// Test cases: {len(scenarios)}")
-        lines.append(f"// Number format: {number_format.value}")
-        lines.append(f"//==============================================================================")
-        lines.append("")
-        lines.append("`timescale 1ns / 1ps")
+        lines.append(f"// DUT: {dut_module}")
+        lines.append(f"// Bitwidth: {bitwidth}")
+        lines.append(f"// Test Cases: {len(scenarios)}")
+        lines.append(f"// Quality Score: {quality_analysis['quality_score']:.1f}/100")
+        lines.append("//==============================================================================")
         lines.append("")
         lines.append(f"module {feature_name}_tb;")
         lines.append("")
-
-        # Signal declarations
         lines.append("    //--------------------------------------------------------------------------")
-        lines.append("    // Test Signals")
+        lines.append("    // Signals")
         lines.append("    //--------------------------------------------------------------------------")
         lines.append(f"    reg clk;")
         lines.append(f"    reg rst;")
@@ -464,7 +757,7 @@ class TestbenchGenerator:
 
         # DUT instantiation
         lines.append("    //--------------------------------------------------------------------------")
-        lines.append("    // Device Under Test (DUT)")
+        lines.append("    // Device Under Test")
         lines.append("    //--------------------------------------------------------------------------")
         lines.append(f"    {dut_module} dut (")
         lines.append(f"        .clk(clk),")
@@ -485,7 +778,7 @@ class TestbenchGenerator:
         lines.append("    //--------------------------------------------------------------------------")
         lines.append("    initial begin")
         lines.append("        clk = 0;")
-        lines.append("        forever #5 clk = ~clk;  // 100MHz clock")
+        lines.append("        forever #5 clk = ~clk;")
         lines.append("    end")
         lines.append("")
 
@@ -494,7 +787,6 @@ class TestbenchGenerator:
         lines.append("    // Test Stimulus")
         lines.append("    //--------------------------------------------------------------------------")
         lines.append("    initial begin")
-        lines.append("        // VCD dump for waveform")
         lines.append(f"        $dumpfile(\"{feature_name}_{llm_name}.vcd\");")
         lines.append("        $dumpvars(0, dut);")
         lines.append("")
@@ -503,9 +795,9 @@ class TestbenchGenerator:
         lines.append(f"        $display(\"LLM Provider: {llm_name}\");")
         lines.append(f"        $display(\"DUT: {dut_module} ({bitwidth}-bit)\");")
         lines.append(f"        $display(\"Test cases: {len(scenarios)}\");")
+        lines.append(f"        $display(\"Quality Score: {quality_analysis['quality_score']:.1f}/100\");")
         lines.append(f"        $display(\"{'='*70}\\n\");")
         lines.append("")
-        lines.append("        // Reset")
         lines.append("        rst = 1;")
         lines.append("        #20 rst = 0;")
         lines.append("        #10;")
@@ -517,21 +809,19 @@ class TestbenchGenerator:
         lines.append("        //----------------------------------------------------------------------")
 
         for i, scenario in enumerate(scenarios, 1):
-            a_val = scenario.get('a', 0)
-            b_val = scenario.get('b', 0)
-            op_val = scenario.get('opcode', scenario.get('operation', '0000'))
-            expected = scenario.get('result', scenario.get('expected', 0))
+            # Try different field name variations
+            a_val = scenario.get('a') or scenario.get('A') or 0
+            b_val = scenario.get('b') or scenario.get('B') or 0
+            op_val = scenario.get('opcode') or scenario.get('Opcode') or scenario.get('operation') or '0000'
+            expected = scenario.get('expected_result') or scenario.get('Expected_Result') or scenario.get('result') or 0
 
-            # Convert opcode to binary if needed
             if isinstance(op_val, str):
                 if op_val.startswith('0x'):
                     op_int = int(op_val, 16)
                     op_val = format(op_int, '04b')
                 elif not all(c in '01' for c in op_val):
-                    # Try to find in operations mapping
                     op_val = '0000'
 
-            # Format numbers based on number format
             if number_format == NumberFormat.HEXADECIMAL:
                 a_str = f"{bitwidth}'h{a_val:X}"
                 b_str = f"{bitwidth}'h{b_val:X}"
@@ -543,8 +833,8 @@ class TestbenchGenerator:
 
             lines.append(f"        // Test case {i}")
             lines.append(f"        a = {a_str}; b = {b_str}; opcode = 4'b{op_val};")
-            lines.append(f"        #10;  // Wait for one clock cycle")
-            lines.append(f"        #10;  // Wait for result")
+            lines.append(f"        #10;")
+            lines.append(f"        #10;")
             lines.append(f"        total = total + 1;")
             lines.append(f"        if (result == {exp_str}) begin")
             lines.append(f"            $display(\"✅ Test {i} PASSED: %d op %d = %d\", a, b, result);")
@@ -578,64 +868,75 @@ class TestbenchGenerator:
         lines.append("")
         lines.append("endmodule")
 
-        return '\n'.join(lines)
+        testbench_content = '\n'.join(lines)
+
+        return testbench_content, quality_analysis
 
     def generate_all(self) -> Dict[str, List[Path]]:
-        """
-        Generate testbenches for all .feature files.
-
-        Returns:
-            Dictionary mapping LLM names to list of generated testbench paths
-        """
+        """Generate testbenches for all .feature files with quality analysis"""
         print("\n" + "=" * 70)
-        print("🚀 Testbench Generator - Multi-LLM Mode")
+        print("🚀 Testbench Generator with Quality Analysis")
         print("=" * 70)
 
-        # Scan for features
         feature_files = self.scan_features()
 
         if not feature_files:
-            print("\n❌ No .feature files found. Run bdd_generator.py first.")
+            print("\n❌ No .feature files found")
             return {}
 
         generated_by_llm = {}
+        quality_by_llm = {}
 
         for feature_path, llm_name in feature_files:
             try:
                 print(f"\n📖 Processing: {llm_name}/{feature_path.name}")
 
-                # Parse feature file
                 parser = FeatureParser(str(feature_path), debug=self.debug)
                 spec = parser.parse()
 
-                self._debug_print(f"Bitwidth: {spec['bitwidth']}", "DEBUG")
-                self._debug_print(f"Scenarios: {len(spec['scenarios'])}", "DEBUG")
-
-                # Generate testbench
                 feature_name = feature_path.stem
-                tb_content = self.generate_testbench(spec, feature_name, llm_name)
+                tb_content, quality_analysis = self.generate_testbench(spec, feature_name, llm_name)
 
-                # Create LLM-specific output directory
+                # Save testbench
                 llm_output_dir = self.output_base_dir / llm_name
                 llm_output_dir.mkdir(parents=True, exist_ok=True)
 
-                # Save testbench
                 tb_path = llm_output_dir / f"{feature_name}_tb.v"
                 with open(tb_path, 'w', encoding='utf-8') as f:
                     f.write(tb_content)
 
-                print(f"   ✅ Generated: {tb_path.relative_to(self.output_base_dir.parent)}")
+                print(f"   ✅ Testbench: {tb_path.name}")
 
-                # Track by LLM
+                # Save quality report
+                analyzer = TestQualityAnalyzer(bitwidth=spec['bitwidth'])
+                quality_report = analyzer.generate_report(quality_analysis, llm_name)
+
+                llm_quality_dir = self.quality_reports_dir / llm_name
+                llm_quality_dir.mkdir(parents=True, exist_ok=True)
+
+                quality_path = llm_quality_dir / f"{feature_name}_quality.txt"
+                with open(quality_path, 'w', encoding='utf-8') as f:
+                    f.write(quality_report)
+
+                print(f"   📊 Quality: {quality_analysis['quality_score']:.1f}/100")
+
+                # Track results
                 if llm_name not in generated_by_llm:
                     generated_by_llm[llm_name] = []
+                    quality_by_llm[llm_name] = []
+
                 generated_by_llm[llm_name].append(tb_path)
+                quality_by_llm[llm_name].append(quality_analysis)
 
             except Exception as e:
                 print(f"   ❌ Error: {e}")
                 if self.debug:
                     import traceback
                     traceback.print_exc()
+
+        # Generate comparison report
+        if quality_by_llm:
+            self._generate_quality_comparison(quality_by_llm)
 
         # Summary
         print("\n" + "=" * 70)
@@ -646,108 +947,85 @@ class TestbenchGenerator:
         print(f"\n📊 Summary:")
         print(f"   Total testbenches: {total}")
         print(f"   LLM providers: {len(generated_by_llm)}")
+        print(f"   Quality reports: {self.quality_reports_dir}")
         print()
 
         for llm_name, files in sorted(generated_by_llm.items()):
-            print(f"   📂 {llm_name}: {len(files)} testbench(es)")
-            for f in files:
-                print(f"      • {f.name}")
+            avg_quality = sum(q['quality_score'] for q in quality_by_llm[llm_name]) / len(quality_by_llm[llm_name])
+            print(f"   📂 {llm_name}: {len(files)} testbench(es), Avg Quality: {avg_quality:.1f}/100")
 
         return generated_by_llm
 
-    def generate_from_feature_file(self, feature_path: Union[str, Path], llm_name: str = "default") -> Path:
-        """Generate testbench from a specific .feature file"""
-        feature_path = Path(feature_path)
+    def _generate_quality_comparison(self, quality_by_llm: Dict[str, List[Dict]]):
+        """Generate comparison report across all LLMs"""
+        comparison_path = self.quality_reports_dir / "quality_comparison.txt"
 
-        if not feature_path.exists():
-            raise FileNotFoundError(f"Feature file not found: {feature_path}")
+        lines = []
+        lines.append("=" * 80)
+        lines.append(" Multi-LLM Testbench Quality Comparison")
+        lines.append("=" * 80)
+        lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append("")
 
-        parser = FeatureParser(str(feature_path), debug=self.debug)
-        spec = parser.parse()
+        # Summary table
+        lines.append("=" * 80)
+        lines.append(" Overall Quality Scores")
+        lines.append("=" * 80)
+        lines.append(f"{'LLM Provider':<15} {'Testbenches':<12} {'Avg Quality':<12} {'Best':<8} {'Worst':<8}")
+        lines.append("-" * 80)
 
-        feature_name = feature_path.stem
-        tb_content = self.generate_testbench(spec, feature_name, llm_name)
+        all_scores = []
+        for llm_name, analyses in sorted(quality_by_llm.items()):
+            scores = [a['quality_score'] for a in analyses]
+            avg_score = sum(scores) / len(scores)
+            best_score = max(scores)
+            worst_score = min(scores)
 
-        # Create LLM-specific output directory
-        llm_output_dir = self.output_base_dir / llm_name
-        llm_output_dir.mkdir(parents=True, exist_ok=True)
+            all_scores.append((llm_name, avg_score))
 
-        tb_path = llm_output_dir / f"{feature_name}_tb.v"
-        with open(tb_path, 'w', encoding='utf-8') as f:
-            f.write(tb_content)
+            lines.append(f"{llm_name:<15} {len(analyses):<12} {avg_score:>10.1f}% {best_score:>6.1f}% {worst_score:>6.1f}%")
 
-        print(f"\n✅ Generated: {tb_path}")
-        return tb_path
+        lines.append("")
+
+        # Rankings
+        lines.append("=" * 80)
+        lines.append(" Rankings")
+        lines.append("=" * 80)
+        lines.append("")
+
+        all_scores.sort(key=lambda x: x[1], reverse=True)
+        lines.append("🏆 By Average Quality Score:")
+        for i, (llm, score) in enumerate(all_scores, 1):
+            medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "  "
+            lines.append(f"   {medal} {i}. {llm}: {score:.1f}%")
+
+        lines.append("")
+        lines.append("=" * 80)
+
+        report_content = '\n'.join(lines)
+
+        with open(comparison_path, 'w', encoding='utf-8') as f:
+            f.write(report_content)
+
+        print(f"\n📊 Quality comparison: {comparison_path}")
 
 
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(
-        description='Generate Verilog testbench from BDD .feature files (No LLM) - Multi-LLM Support',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='''
-Examples:
-  # Generate from all .feature files (including LLM subdirs)
-  python testbench_generator.py
-
-  # Specify feature directory
-  python testbench_generator.py --feature-dir ./output/bdd
-
-  # Specify output directory
-  python testbench_generator.py --output-dir ./output/verilog
-
-  # Specify DUT directory
-  python testbench_generator.py --dut-dir ./output/dut
-
-  # Process single feature file
-  python testbench_generator.py --feature-file ./output/bdd/groq/alu_16bit.feature --llm groq
-
-  # With project root
-  python testbench_generator.py --project-root D:/DE/RQ/MultiLLM_BDD_Comparison/HdlFormalVerifier
-
-DIRECTORY STRUCTURE:
-  This generator supports multi-LLM organization:
-  
-  Input:
-    output/bdd/
-    ├── groq/
-    │   └── alu_16bit.feature
-    ├── deepseek/
-    │   └── alu_16bit.feature
-    └── openai/
-        └── alu_16bit.feature
-
-  Output:
-    output/verilog/
-    ├── groq/
-    │   └── alu_16bit_tb.v       → tests output/dut/alu_16bit.v
-    ├── deepseek/
-    │   └── alu_16bit_tb.v       → tests output/dut/alu_16bit.v
-    └── openai/
-        └── alu_16bit_tb.v       → tests output/dut/alu_16bit.v
-
-  All testbenches test the SAME fixed DUT in output/dut/
-
-SIMULATION:
-  cd output/verilog/groq
-  iverilog -o sim ../../dut/alu_16bit.v alu_16bit_tb.v
-  vvp sim
-  gtkwave *.vcd
-        '''
+        description='Testbench Generator with Quality Analysis',
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
 
-    parser.add_argument('--feature-dir', help='Directory containing .feature files (supports LLM subdirs)')
-    parser.add_argument('--feature-file', help='Specific .feature file to process')
-    parser.add_argument('--output-dir', help='Base output directory for testbench files')
-    parser.add_argument('--dut-dir', help='Directory containing DUT .v files (default: output/dut)')
+    parser.add_argument('--feature-dir', help='Directory containing .feature files')
+    parser.add_argument('--output-dir', help='Output directory for testbench files')
+    parser.add_argument('--dut-dir', help='Directory containing DUT files')
     parser.add_argument('--project-root', help='Project root directory')
-    parser.add_argument('--dut-module', help='DUT module name (auto-detected if not specified)')
-    parser.add_argument('--llm', help='LLM provider name (for single file mode)')
+    parser.add_argument('--dut-module', help='DUT module name')
     parser.add_argument('--debug', action='store_true', default=True, help='Enable debug output')
 
     args = parser.parse_args()
 
-    # Create generator
     generator = TestbenchGenerator(
         feature_dir=args.feature_dir,
         output_dir=args.output_dir,
@@ -757,36 +1035,14 @@ SIMULATION:
         debug=args.debug
     )
 
-    # Generate
-    if args.feature_file:
-        # Single file mode
-        llm_name = args.llm or "default"
-        tb_path = generator.generate_from_feature_file(args.feature_file, llm_name)
-        print(f"\n📄 Generated: {tb_path}")
-    else:
-        # Batch mode (multi-LLM)
-        generated_by_llm = generator.generate_all()
+    generated_by_llm = generator.generate_all()
 
-        if generated_by_llm:
-            # Show next steps
-            print("\n📋 NEXT STEPS:")
-            print("=" * 70)
-
-            dut_module = generator._detect_dut_module()
-            dut_path = generator.dut_dir / f"{dut_module}.v"
-
-            print(f"1. Ensure DUT exists: {dut_path}")
-            print(f"\n2. Run simulations for each LLM:")
-
-            for llm_name in sorted(generated_by_llm.keys()):
-                llm_dir = generator.output_base_dir / llm_name
-                print(f"\n   📂 {llm_name}:")
-                print(f"      cd {llm_dir}")
-                print(f"      iverilog -o sim ../../dut/{dut_module}.v *_tb.v")
-                print(f"      vvp sim")
-                print(f"      gtkwave *.vcd")
-
-            print("\n" + "=" * 70)
+    if generated_by_llm:
+        print("\n📋 NEXT STEPS:")
+        print("=" * 70)
+        print("1. Review quality reports in: output/quality_reports/")
+        print("2. Run simulations: python simulation_runner.py")
+        print("=" * 70)
 
 
 if __name__ == "__main__":
