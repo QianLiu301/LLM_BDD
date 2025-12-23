@@ -1,0 +1,1379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-LLM Hardware Verification Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+
+        header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+
+        header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+
+        /* Pipeline Cards */
+        .pipeline {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            margin-bottom: 20px;
+        }
+
+        .pipeline h2 {
+            color: #667eea;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .flow-container {
+            display: flex;
+            align-items: stretch;
+            justify-content: space-between;
+            gap: 15px;
+            overflow-x: auto;
+            padding: 20px 0;
+        }
+
+        /* Interactive Flow Steps */
+        .flow-step {
+            flex: 1;
+            min-width: 180px;
+            text-align: center;
+            padding: 25px 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 12px;
+            position: relative;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+        }
+
+        .flow-step:hover:not(.disabled) {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.5);
+        }
+
+        .flow-step.disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            background: #ccc;
+        }
+
+        .flow-step.active {
+            animation: pulse 1.5s infinite;
+            box-shadow: 0 0 20px rgba(102, 126, 234, 0.8);
+        }
+
+        .flow-step.completed {
+            background: linear-gradient(135deg, #56ab2f 0%, #a8e063 100%);
+        }
+
+        .flow-step.error {
+            background: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                transform: scale(1);
+                box-shadow: 0 0 20px rgba(102, 126, 234, 0.8);
+            }
+            50% {
+                transform: scale(1.05);
+                box-shadow: 0 0 30px rgba(102, 126, 234, 1);
+            }
+        }
+
+        .flow-step .icon {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .flow-step .label {
+            font-weight: bold;
+            margin-bottom: 5px;
+            font-size: 1.1em;
+        }
+
+        .flow-step .sublabel {
+            font-size: 0.85em;
+            opacity: 0.9;
+        }
+
+        .flow-step .status {
+            margin-top: 10px;
+            font-size: 0.8em;
+            padding: 5px 10px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 15px;
+            display: inline-block;
+        }
+
+        .flow-step .download-btn {
+            margin-top: 10px;
+            padding: 8px 15px;
+            background: white;
+            color: #667eea;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.9em;
+            font-weight: 600;
+            transition: all 0.2s;
+            display: none;
+        }
+
+        .flow-step.completed .download-btn {
+            display: inline-block;
+        }
+
+        .flow-step .download-btn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        }
+
+        .flow-arrow {
+            font-size: 2em;
+            color: #667eea;
+            display: flex;
+            align-items: center;
+            padding: 0 5px;
+        }
+
+        /* Input Panel */
+        .input-panel {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            margin-bottom: 20px;
+        }
+
+        .input-panel h2 {
+            color: #667eea;
+            margin-bottom: 15px;
+        }
+
+        .input-group {
+            margin-bottom: 20px;
+        }
+
+        .input-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 600;
+        }
+
+        .input-group select,
+        .input-group textarea,
+        .input-group input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 1em;
+            transition: border-color 0.3s;
+        }
+
+        .input-group select:focus,
+        .input-group textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .input-group textarea {
+            resize: vertical;
+            min-height: 100px;
+            font-family: inherit;
+        }
+
+        .examples {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+
+        .examples h4 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+
+        .examples ul {
+            list-style: none;
+            padding-left: 0;
+        }
+
+        .examples li {
+            padding: 8px 0;
+            color: #555;
+        }
+
+        .examples li:before {
+            content: "→ ";
+            color: #667eea;
+            font-weight: bold;
+        }
+
+        .info-box {
+            background: #e7f3ff;
+            border-left: 4px solid #2196F3;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+
+        .info-box h4 {
+            color: #2196F3;
+            margin-bottom: 8px;
+        }
+
+        /* Status Messages */
+        .status-message {
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+            display: none;
+        }
+
+        .status-message.show {
+            display: block;
+        }
+
+        .status-message.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .status-message.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .status-message.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+
+        /* Results Panel */
+        .results-panel {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            margin-top: 20px;
+            display: none;
+        }
+
+        .results-panel.show {
+            display: block;
+        }
+
+        .results-panel h3 {
+            color: #667eea;
+            margin-bottom: 15px;
+        }
+
+        .result-item {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            border-left: 4px solid #667eea;
+        }
+
+        .result-item h4 {
+            color: #667eea;
+            margin-bottom: 8px;
+        }
+
+        .result-item pre {
+            background: white;
+            padding: 10px;
+            border-radius: 5px;
+            overflow-x: auto;
+            font-size: 0.9em;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        @media (max-width: 1200px) {
+            .flow-container {
+                flex-wrap: wrap;
+            }
+
+            .flow-step {
+                min-width: 150px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🚀 Multi-LLM Hardware Verification Platform</h1>
+            <p>Interactive Pipeline - Click Each Step to Execute</p>
+        </header>
+
+        <!-- Input Panel -->
+        <div class="input-panel">
+            <h2>📝 Configuration</h2>
+
+            <div class="examples">
+                <h4>💡 Example Test Requirements:</h4>
+                <ul>
+                    <li>Generate comprehensive tests for 16-bit ADD operation</li>
+                    <li>Create BDD scenarios for 32-bit ALU with overflow testing</li>
+                    <li>Test SUB operation with edge cases: zero, max, negative</li>
+                    <li>Generate 10 test cases for AND/OR operations</li>
+                </ul>
+            </div>
+
+            <div class="info-box">
+                <h4>ℹ️ How to Use:</h4>
+                <p>1. Select an LLM provider and enter test requirements</p>
+                <p>2. Click each pipeline step in order (they'll light up when ready)</p>
+                <p>3. Download generated files using the download buttons</p>
+                <p>4. View waveform after simulation completes</p>
+            </div>
+
+            <div class="input-group">
+                <label for="llm-select">🤖 Select LLM Provider:</label>
+                <select id="llm-select">
+                    <option value="">-- Choose LLM --</option>
+                    <optgroup label="🆓 FREE">
+                        <option value="gemini">Google Gemini</option>
+                        <option value="groq">Groq (Ultra-fast)</option>
+                        <option value="deepseek">DeepSeek (No Proxy)</option>
+                    </optgroup>
+                    <optgroup label="💰 PAID">
+                        <option value="openai">OpenAI GPT-5</option>
+                        <option value="claude">Anthropic Claude</option>
+                    </optgroup>
+                </select>
+            </div>
+
+            <div class="input-group" id="model-group" style="display:none;">
+                <label for="model-select">📦 GPT-5 Model:</label>
+                <select id="model-select">
+                    <option value="gpt-5-mini">gpt-5-mini (Recommended)</option>
+                    <option value="gpt-5">gpt-5</option>
+                    <option value="gpt-5.1">gpt-5.1</option>
+                    <option value="gpt-5.1-codex">gpt-5.1-codex</option>
+                </select>
+            </div>
+
+            <div class="input-group">
+                <label for="test-input">✍️ Test Requirements:</label>
+                <textarea
+                    id="test-input"
+                    placeholder="Example: Generate comprehensive test scenarios for a 16-bit ADD operation with edge cases including zero, maximum values, and overflow conditions."
+                ></textarea>
+            </div>
+
+            <div id="global-status" class="status-message"></div>
+        </div>
+
+        <!-- Pipeline 1: Interactive Steps -->
+        <div class="pipeline">
+            <h2>🧪 Pipeline: BDD Test Generation & Verification</h2>
+            <div class="flow-container">
+                <!-- Step 1: LLM Generation -->
+                <div class="flow-step" id="step-llm" onclick="executeStep('llm')">
+                    <div class="icon">🤖</div>
+                    <div class="label">LLM Generation</div>
+                    <div class="sublabel">Feature File</div>
+                    <div class="status" id="status-llm">Click to Start</div>
+                    <button class="download-btn" onclick="downloadFile('llm', event)">📥 Download</button>
+                </div>
+
+                <div class="flow-arrow">→</div>
+
+                <!-- Step 2: Metadata -->
+                <div class="flow-step disabled" id="step-metadata" onclick="executeStep('metadata')">
+                    <div class="icon">📊</div>
+                    <div class="label">Metadata</div>
+                    <div class="sublabel">Extract Info</div>
+                    <div class="status" id="status-metadata">Waiting...</div>
+                    <button class="download-btn" onclick="downloadFile('metadata', event)">📥 Download</button>
+                </div>
+
+                <div class="flow-arrow">→</div>
+
+                <!-- Step 3: Testbench -->
+                <div class="flow-step disabled" id="step-testbench" onclick="executeStep('testbench')">
+                    <div class="icon">⚙️</div>
+                    <div class="label">Testbench</div>
+                    <div class="sublabel">Verilog Gen</div>
+                    <div class="status" id="status-testbench">Waiting...</div>
+                    <button class="download-btn" onclick="downloadFile('testbench', event)">📥 Download</button>
+                </div>
+
+                <div class="flow-arrow">→</div>
+
+                <!-- Step 4: Simulation -->
+                <div class="flow-step disabled" id="step-simulation" onclick="executeStep('simulation')">
+                    <div class="icon">🔬</div>
+                    <div class="label">Simulation</div>
+                    <div class="sublabel">Run Tests</div>
+                    <div class="status" id="status-simulation">Waiting...</div>
+                    <button class="download-btn" onclick="downloadFile('simulation', event)">📥 VCD</button>
+                </div>
+
+                <div class="flow-arrow">→</div>
+
+                <!-- Step 5: Waveform -->
+                <div class="flow-step disabled" id="step-waveform" onclick="executeStep('waveform')">
+                    <div class="icon">📈</div>
+                    <div class="label">Waveform</div>
+                    <div class="sublabel">View GTKWave</div>
+                    <div class="status" id="status-waveform">Waiting...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Results Panel -->
+        <div class="results-panel" id="results-panel">
+            <h3>📋 Execution Results</h3>
+            <div id="results-content"></div>
+        </div>
+    </div>
+
+    <script>
+        // Global state
+        let currentStep = null;
+        let generatedFiles = {};
+
+        // Show/hide model selection
+        document.getElementById('llm-select').addEventListener('change', function() {
+            document.getElementById('model-group').style.display =
+                this.value === 'openai' ? 'block' : 'none';
+        });
+
+        // Execute pipeline step
+        async function executeStep(step) {
+            const stepEl = document.getElementById('step-' + step);
+
+            // Check if disabled
+            if (stepEl.classList.contains('disabled')) {
+                showMessage('Please complete previous steps first', 'error');
+                return;
+            }
+
+            // Validate inputs for first step
+            if (step === 'llm') {
+                const llm = document.getElementById('llm-select').value;
+                const input = document.getElementById('test-input').value.trim();
+
+                if (!llm) {
+                    showMessage('Please select an LLM provider', 'error');
+                    return;
+                }
+                if (!input) {
+                    showMessage('Please enter test requirements', 'error');
+                    return;
+                }
+            }
+
+            // Set active state
+            stepEl.classList.add('active');
+            updateStatus(step, 'Running...');
+
+            try {
+                let result;
+
+                switch(step) {
+                    case 'llm':
+                        result = await executeLLM();
+                        break;
+                    case 'metadata':
+                        result = await executeMetadata();
+                        break;
+                    case 'testbench':
+                        result = await executeTestbench();
+                        break;
+                    case 'simulation':
+                        result = await executeSimulation();
+                        break;
+                    case 'waveform':
+                        result = await executeWaveform();
+                        break;
+                }
+
+                // Success
+                stepEl.classList.remove('active');
+                stepEl.classList.add('completed');
+                updateStatus(step, '✓ Completed');
+
+                // Store file info
+                if (result.files) {
+                    generatedFiles[step] = result.files;
+                }
+
+                // Enable next step
+                enableNextStep(step);
+
+                // Show results
+                showResults(step, result);
+                showMessage(result.message || 'Step completed successfully', 'success');
+
+            } catch (error) {
+                // Error
+                stepEl.classList.remove('active');
+                stepEl.classList.add('error');
+                updateStatus(step, '✗ Failed');
+                showMessage('Error: ' + error.message, 'error');
+            }
+        }
+
+        // Execute LLM generation
+        async function executeLLM() {
+            const llm = document.getElementById('llm-select').value;
+            const input = document.getElementById('test-input').value;
+            const model = document.getElementById('model-select').value;
+
+            const response = await fetch('/api/execute-step', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    step: 'llm',
+                    llm: llm,
+                    model: model,
+                    input: input
+                })
+            });
+
+            const result = await response.json();
+            if (!result.success) throw new Error(result.error);
+
+            return result;
+        }
+
+        // Execute Metadata extraction
+        async function executeMetadata() {
+            const response = await fetch('/api/execute-step', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({step: 'metadata'})
+            });
+
+            const result = await response.json();
+            if (!result.success) throw new Error(result.error);
+
+            return result;
+        }
+
+        // Execute Testbench generation
+        async function executeTestbench() {
+            const response = await fetch('/api/execute-step', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({step: 'testbench'})
+            });
+
+            const result = await response.json();
+            if (!result.success) throw new Error(result.error);
+
+            return result;
+        }
+
+        // Execute Simulation
+        async function executeSimulation() {
+            const response = await fetch('/api/execute-step', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({step: 'simulation'})
+            });
+
+            const result = await response.json();
+            if (!result.success) throw new Error(result.error);
+
+            return result;
+        }
+
+        // Execute Waveform viewer
+        async function executeWaveform() {
+            const response = await fetch('/api/execute-step', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({step: 'waveform'})
+            });
+
+            const result = await response.json();
+            if (!result.success) throw new Error(result.error);
+
+            return result;
+        }
+
+        // Download file
+        async function downloadFile(step, event) {
+            event.stopPropagation();
+
+            if (!generatedFiles[step]) {
+                alert('No files available for download');
+                return;
+            }
+
+            const files = generatedFiles[step];
+
+            // Download first file (or show selection if multiple)
+            if (files.length === 1) {
+                window.location.href = `/api/download/${step}/${encodeURIComponent(files[0])}`;
+            } else {
+                // Multiple files - show selection
+                const file = prompt('Select file:\n' + files.join('\n'));
+                if (file) {
+                    window.location.href = `/api/download/${step}/${encodeURIComponent(file)}`;
+                }
+            }
+        }
+
+        // Update step status
+        function updateStatus(step, text) {
+            document.getElementById('status-' + step).textContent = text;
+        }
+
+        // Enable next step
+        function enableNextStep(step) {
+            const steps = ['llm', 'metadata', 'testbench', 'simulation', 'waveform'];
+            const currentIndex = steps.indexOf(step);
+
+            if (currentIndex < steps.length - 1) {
+                const nextStep = steps[currentIndex + 1];
+                document.getElementById('step-' + nextStep).classList.remove('disabled');
+            }
+        }
+
+        // Show message
+        function showMessage(message, type) {
+            const statusEl = document.getElementById('global-status');
+            statusEl.textContent = message;
+            statusEl.className = 'status-message show ' + type;
+
+            setTimeout(() => {
+                statusEl.classList.remove('show');
+            }, 5000);
+        }
+
+        // Show results
+        function showResults(step, result) {
+            const panel = document.getElementById('results-panel');
+            const content = document.getElementById('results-content');
+
+            panel.classList.add('show');
+
+            const resultHtml = `
+                <div class="result-item">
+                    <h4>Step: ${step.toUpperCase()}</h4>
+                    <p><strong>Status:</strong> ${result.message || 'Completed'}</p>
+                    ${result.output ? `<pre>${result.output.substring(0, 500)}</pre>` : ''}
+                    ${result.files ? `<p><strong>Files:</strong> ${result.files.join(', ')}</p>` : ''}
+                </div>
+            `;
+
+            content.innerHTML = resultHtml + content.innerHTML;
+        }
+    </script>
+</body>
+</html>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+
+        header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+
+        header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+
+        .card h2 {
+            color: #667eea;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .pipeline {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            margin-bottom: 20px;
+        }
+
+        .pipeline h2 {
+            color: #667eea;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .flow-container {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            overflow-x: auto;
+            padding: 20px 0;
+        }
+
+        .flow-step {
+            min-width: 150px;
+            text-align: center;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 10px;
+            position: relative;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+        }
+
+        .flow-step.active {
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+
+        .flow-step .icon {
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+
+        .flow-step .label {
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        .flow-step .sublabel {
+            font-size: 0.85em;
+            opacity: 0.9;
+        }
+
+        .flow-arrow {
+            font-size: 2em;
+            color: #667eea;
+            margin: 0 10px;
+        }
+
+        .input-group {
+            margin-bottom: 20px;
+        }
+
+        .input-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 600;
+        }
+
+        .input-group select,
+        .input-group textarea,
+        .input-group input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 1em;
+            transition: border-color 0.3s;
+        }
+
+        .input-group select:focus,
+        .input-group textarea:focus,
+        .input-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .input-group textarea {
+            resize: vertical;
+            min-height: 100px;
+            font-family: inherit;
+        }
+
+        .examples {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+
+        .examples h4 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+
+        .examples ul {
+            list-style: none;
+            padding-left: 0;
+        }
+
+        .examples li {
+            padding: 8px 0;
+            color: #555;
+        }
+
+        .examples li:before {
+            content: "→ ";
+            color: #667eea;
+            font-weight: bold;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 8px;
+            font-size: 1.1em;
+            font-weight: 600;
+            cursor: pointer;
+            width: 100%;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            display: none;
+        }
+
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+            display: block;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+            display: block;
+        }
+
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+            display: block;
+        }
+
+        .results {
+            margin-top: 20px;
+        }
+
+        .result-item {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            border-left: 4px solid #667eea;
+        }
+
+        .result-item h4 {
+            color: #667eea;
+            margin-bottom: 8px;
+        }
+
+        .result-item pre {
+            background: white;
+            padding: 10px;
+            border-radius: 5px;
+            overflow-x: auto;
+            font-size: 0.9em;
+        }
+
+        .llm-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 15px;
+            font-size: 0.85em;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+
+        .llm-badge.free {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .llm-badge.paid {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .info-box {
+            background: #e7f3ff;
+            border-left: 4px solid #2196F3;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+
+        .info-box h4 {
+            color: #2196F3;
+            margin-bottom: 8px;
+        }
+
+        @media (max-width: 968px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+
+            .flow-container {
+                flex-direction: column;
+            }
+
+            .flow-arrow {
+                transform: rotate(90deg);
+                margin: 10px 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🚀 Multi-LLM Hardware Verification Platform</h1>
+            <p>Natural Language → BDD Features → Automated Testing</p>
+        </header>
+
+        <!-- Pipeline 1: Test Generation -->
+        <div class="pipeline">
+            <h2>🧪 Pipeline 1: BDD Test Generation & Verification</h2>
+            <div class="flow-container">
+                <div class="flow-step" id="step1">
+                    <div class="icon">💬</div>
+                    <div class="label">Natural Language</div>
+                    <div class="sublabel">Test Requirements</div>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step" id="step2">
+                    <div class="icon">🤖</div>
+                    <div class="label">LLM Generation</div>
+                    <div class="sublabel">Feature File</div>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step" id="step3">
+                    <div class="icon">📊</div>
+                    <div class="label">Metadata</div>
+                    <div class="sublabel">Extract Info</div>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step" id="step4">
+                    <div class="icon">⚙️</div>
+                    <div class="label">Testbench</div>
+                    <div class="sublabel">Verilog Gen</div>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step" id="step5">
+                    <div class="icon">📈</div>
+                    <div class="label">Simulation</div>
+                    <div class="sublabel">Waveform</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Pipeline 2: DUT Generation -->
+        <div class="pipeline">
+            <h2>🔧 Pipeline 2: DUT (Design Under Test) Generation</h2>
+            <div class="flow-container">
+                <div class="flow-step">
+                    <div class="icon">💬</div>
+                    <div class="label">Natural Language</div>
+                    <div class="sublabel">ALU Specification</div>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step">
+                    <div class="icon">🤖</div>
+                    <div class="label">LLM Generation</div>
+                    <div class="sublabel">ALU Verilog</div>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step">
+                    <div class="icon">✅</div>
+                    <div class="label">Ready for Testing</div>
+                    <div class="sublabel">Use in Pipeline 1</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="main-content">
+            <!-- Left Panel: Input -->
+            <div class="card">
+                <h2>📝 Test Generation Input</h2>
+
+                <div class="examples">
+                    <h4>💡 Example Inputs:</h4>
+                    <ul>
+                        <li>Generate comprehensive tests for 16-bit ADD operation</li>
+                        <li>Create BDD scenarios for 32-bit ALU with overflow testing</li>
+                        <li>Test SUB operation with edge cases: zero, max, negative</li>
+                        <li>Generate 10 test cases for AND/OR operations</li>
+                    </ul>
+                </div>
+
+                <div class="info-box">
+                    <h4>ℹ️ What to Input:</h4>
+                    <p>Describe what you want to <strong>test</strong>, not what to build. Focus on test scenarios, edge cases, and verification requirements.</p>
+                </div>
+
+                <div class="input-group">
+                    <label for="llm-select">🤖 Select LLM Provider:</label>
+                    <select id="llm-select">
+                        <option value="">-- Choose LLM --</option>
+                        <optgroup label="🆓 FREE (Recommended)">
+                            <option value="gemini">Google Gemini (60 req/min)</option>
+                            <option value="groq">Groq (Ultra-fast)</option>
+                            <option value="deepseek">DeepSeek (Chinese, No Proxy)</option>
+                        </optgroup>
+                        <optgroup label="💰 PAID (High Quality)">
+                            <option value="openai">OpenAI GPT-5</option>
+                            <option value="claude">Anthropic Claude</option>
+                        </optgroup>
+                    </select>
+                </div>
+
+                <div class="input-group" id="model-group" style="display:none;">
+                    <label for="model-select">📦 Select GPT-5 Model:</label>
+                    <select id="model-select">
+                        <option value="gpt-5-mini">gpt-5-mini (Recommended)</option>
+                        <option value="gpt-5">gpt-5</option>
+                        <option value="gpt-5.1">gpt-5.1</option>
+                        <option value="gpt-5.1-codex">gpt-5.1-codex</option>
+                    </select>
+                </div>
+
+                <div class="input-group">
+                    <label for="test-input">✍️ Test Requirements (Natural Language):</label>
+                    <textarea
+                        id="test-input"
+                        placeholder="Example: Generate comprehensive test scenarios for a 16-bit ADD operation with edge cases including zero, maximum values, and overflow conditions. Include at least 8 test cases covering positive, negative, and boundary values."
+                    ></textarea>
+                </div>
+
+                <button class="btn" id="generate-btn" onclick="generateFeature()">
+                    🚀 Generate BDD Feature File
+                </button>
+
+                <div id="status" class="status"></div>
+            </div>
+
+            <!-- Right Panel: Output -->
+            <div class="card">
+                <h2>📤 Generated Output</h2>
+
+                <div class="results" id="results">
+                    <div style="text-align: center; color: #999; padding: 40px 0;">
+                        <div style="font-size: 3em;">📋</div>
+                        <p>Generated feature files will appear here...</p>
+                        <p style="font-size: 0.9em; margin-top: 10px;">Select an LLM and enter your test requirements to begin.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let statusCheckInterval = null;
+
+        // Show/hide model selection for OpenAI
+        document.getElementById('llm-select').addEventListener('change', function() {
+            const modelGroup = document.getElementById('model-group');
+            if (this.value === 'openai') {
+                modelGroup.style.display = 'block';
+            } else {
+                modelGroup.style.display = 'none';
+            }
+        });
+
+        // Generate feature - call real API
+        async function generateFeature() {
+            const llm = document.getElementById('llm-select').value;
+            const input = document.getElementById('test-input').value.trim();
+            const statusDiv = document.getElementById('status');
+            const resultsDiv = document.getElementById('results');
+            const generateBtn = document.getElementById('generate-btn');
+
+            // Validation
+            if (!llm) {
+                statusDiv.className = 'status error';
+                statusDiv.textContent = '❌ Please select an LLM provider';
+                return;
+            }
+
+            if (!input) {
+                statusDiv.className = 'status error';
+                statusDiv.textContent = '❌ Please enter test requirements';
+                return;
+            }
+
+            // Disable button
+            generateBtn.disabled = true;
+            generateBtn.textContent = '⏳ Generating...';
+
+            // Show progress
+            statusDiv.className = 'status info';
+            statusDiv.textContent = '🔄 Calling ' + llm.toUpperCase() + ' LLM...';
+
+            try {
+                // Get model for OpenAI
+                let model = null;
+                if (llm === 'openai') {
+                    model = document.getElementById('model-select').value;
+                }
+
+                // Call API - Step 1: Generate Feature
+                const response = await fetch('/api/generate-feature', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        llm: llm,
+                        model: model,
+                        input: input
+                    })
+                });
+
+                const result = await response.json();
+
+                if (!result.success) {
+                    throw new Error(result.error);
+                }
+
+                // Animate pipeline step 1-2
+                animateStep('step1');
+                await sleep(500);
+                animateStep('step2');
+
+                // Success - show results
+                statusDiv.className = 'status success';
+                statusDiv.textContent = '✅ Feature file generated successfully!';
+
+                resultsDiv.innerHTML = `
+                    <div class="result-item">
+                        <h4>📄 Step 1: Feature File Generated</h4>
+                        <p><strong>Provider:</strong> ${llm.toUpperCase()} ${model ? '(' + model + ')' : ''}</p>
+                        <p><strong>File:</strong> ${result.feature_path.split('/').pop()}</p>
+                        <p><strong>Location:</strong> ${result.feature_path}</p>
+                    </div>
+
+                    <div class="result-item">
+                        <h4>📝 Preview (first 500 chars)</h4>
+                        <pre>${result.feature_preview}</pre>
+                    </div>
+                `;
+
+                await sleep(800);
+
+                // Step 2: Extract Metadata
+                statusDiv.textContent = '🔄 Step 2/5: Extracting metadata...';
+                animateStep('step3');
+
+                const metadataResponse = await fetch('/api/extract-metadata', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({})
+                });
+
+                const metadataResult = await metadataResponse.json();
+
+                if (metadataResult.success) {
+                    resultsDiv.innerHTML += `
+                        <div class="result-item">
+                            <h4>📊 Step 2: Metadata Extracted</h4>
+                            <p><strong>Files processed:</strong> ${metadataResult.stats.success} / ${metadataResult.stats.total}</p>
+                            <p><strong>LLM providers:</strong> ${metadataResult.stats.llm_providers.join(', ')}</p>
+                        </div>
+                    `;
+                }
+
+                await sleep(800);
+
+                // Step 3: Generate Testbench
+                statusDiv.textContent = '🔄 Step 3/5: Generating testbench...';
+                animateStep('step4');
+
+                const testbenchResponse = await fetch('/api/generate-testbench', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({})
+                });
+
+                const testbenchResult = await testbenchResponse.json();
+
+                if (testbenchResult.success) {
+                    resultsDiv.innerHTML += `
+                        <div class="result-item">
+                            <h4>⚙️ Step 3: Testbench Generated</h4>
+                            <p><strong>Status:</strong> Verilog testbench created successfully</p>
+                            <pre>${testbenchResult.output.substring(0, 300)}...</pre>
+                        </div>
+                    `;
+                } else {
+                    resultsDiv.innerHTML += `
+                        <div class="result-item">
+                            <h4>⚙️ Step 3: Testbench (Optional)</h4>
+                            <p><em>Testbench generation requires additional setup</em></p>
+                        </div>
+                    `;
+                }
+
+                await sleep(800);
+
+                // Step 4: Run Simulation
+                statusDiv.textContent = '🔄 Step 4/5: Running simulation...';
+                animateStep('step5');
+
+                const simResponse = await fetch('/api/run-simulation', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({})
+                });
+
+                const simResult = await simResponse.json();
+
+                if (simResult.success) {
+                    resultsDiv.innerHTML += `
+                        <div class="result-item">
+                            <h4>📈 Step 4: Simulation Completed</h4>
+                            <p><strong>Status:</strong> Waveform generated successfully</p>
+                            <pre>${simResult.output.substring(0, 300)}...</pre>
+                        </div>
+                    `;
+                } else {
+                    resultsDiv.innerHTML += `
+                        <div class="result-item">
+                            <h4>📈 Step 4: Simulation (Optional)</h4>
+                            <p><em>Simulation requires Verilog simulator installation</em></p>
+                        </div>
+                    `;
+                }
+
+                // Complete
+                statusDiv.className = 'status success';
+                statusDiv.textContent = '✅ Pipeline completed! Feature file and metadata generated.';
+
+                // Reset animation
+                setTimeout(() => {
+                    document.querySelectorAll('.flow-step').forEach(step => {
+                        step.classList.remove('active');
+                    });
+                }, 2000);
+
+            } catch (error) {
+                statusDiv.className = 'status error';
+                statusDiv.textContent = '❌ Error: ' + error.message;
+                console.error('Error:', error);
+            } finally {
+                // Re-enable button
+                generateBtn.disabled = false;
+                generateBtn.textContent = '🚀 Generate BDD Feature File';
+            }
+        }
+
+        function animateStep(stepId) {
+            // Remove active from all
+            document.querySelectorAll('.flow-step').forEach(s => s.classList.remove('active'));
+            // Add to current
+            document.getElementById(stepId).classList.add('active');
+        }
+
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+    </script>
+</body>
+</html>
